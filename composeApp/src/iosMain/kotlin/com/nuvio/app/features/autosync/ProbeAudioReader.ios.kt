@@ -31,6 +31,8 @@ import kotlinx.cinterop.CPointerVar
 import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.convert
 import platform.AVFoundation.AVAssetReaderAudioMixOutput
+import platform.AVFoundation.AVAssetTrack
+import platform.AVFoundation.AVMediaTypeAudio
 import platform.posix.fclose
 import platform.posix.fopen
 import platform.posix.fwrite
@@ -201,7 +203,14 @@ private suspend fun readAssetBins(
         AV_LINEAR_PCM_IS_FLOAT_KEY to false,
         AV_LINEAR_PCM_IS_NON_INTERLEAVED_KEY to false,
     )
-    val output = AVAssetReaderAudioMixOutput(null, outputSettings)
+    // AVAsset.tracks is not exposed to Kotlin/Native, but the "tracks" key
+    // is already loaded above (awaitTracks), so read it back via KVC.
+    val audioTracks = (asset.valueForKey("tracks") as? List<*>)
+        .orEmpty()
+        .filterIsInstance<AVAssetTrack>()
+        .filter { it.mediaType == AVMediaTypeAudio }
+    if (audioTracks.isEmpty()) return false
+    val output = AVAssetReaderAudioMixOutput(audioTracks, outputSettings)
     val reader = memScoped {
         val error = alloc<ObjCObjectVar<platform.Foundation.NSError?>>()
         AVAssetReader(asset, error.ptr)
