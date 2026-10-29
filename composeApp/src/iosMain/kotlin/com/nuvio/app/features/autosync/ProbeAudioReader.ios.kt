@@ -57,7 +57,6 @@ private const val AV_SAMPLE_RATE_KEY = "AVSampleRateKey"
 private const val AV_NUMBER_OF_CHANNELS_KEY = "AVNumberOfChannelsKey"
 private const val AV_LINEAR_PCM_BIT_DEPTH_KEY = "AVLinearPCMBitDepthKey"
 private const val AV_LINEAR_PCM_IS_FLOAT_KEY = "AVLinearPCMIsFloatKey"
-private const val AV_LINEAR_PCM_IS_NON_INTERLEAVED_KEY = "AVLinearPCMIsNonInterleavedKey"
 private const val AV_URL_ASSET_HTTP_HEADER_FIELDS_KEY = "AVURLAssetHTTPHeaderFieldsKey"
 // 'lpcm' as a four-char code.
 private const val LPCM_FORMAT_ID = 1819304813u
@@ -202,7 +201,6 @@ private suspend fun readAssetBins(
         AV_NUMBER_OF_CHANNELS_KEY to 1,
         AV_LINEAR_PCM_BIT_DEPTH_KEY to 16,
         AV_LINEAR_PCM_IS_FLOAT_KEY to false,
-        AV_LINEAR_PCM_IS_NON_INTERLEAVED_KEY to false,
     )
     // AVAsset.tracks and AVAssetTrack.mediaType are not exposed to
     // Kotlin/Native, and NSObject KVC (valueForKey) is not either

@@ -7,6 +7,7 @@ import com.nuvio.app.features.autosync.AutoSyncPlayerController
 import com.nuvio.app.features.autosync.AutoSyncPreferencesRepository
 import com.nuvio.app.features.autosync.AutoSyncSubtitleCandidate
 import com.nuvio.app.features.autosync.ProbeAutoSyncAligner
+import com.nuvio.app.core.logging.InAppLogger
 import com.nuvio.app.features.autosync.readProbeAudioEnvelope
 import com.nuvio.app.features.addons.httpGetTextWithHeaders
 import kotlinx.coroutines.flow.collect
@@ -91,25 +92,55 @@ internal fun PlayerScreenRuntime.BindAutoSyncRuntimeEffects() {
  * applied as a subtitle delay.
  */
 private suspend fun PlayerScreenRuntime.runProbeAutoSyncIfNeeded() {
-    val subtitle = selectedAddonSubtitle ?: return
-    if (activeSourceUrl.startsWith("file:")) return
-    val attemptKey = playbackSession.videoId + "|" + subtitle.url
-    if (probeAutoSyncAttemptedKey == attemptKey) return
+    val videoId = playbackSession.videoId
+    val subtitle = selectedAddonSubtitle
+    if (subtitle == null) {
+        InAppLogger.debug("Player/ProbeAutoSync", "probe skipped: no addon subtitle videoId=")
+        return
+    }
+    if (activeSourceUrl.startsWith("file:")) {
+        InAppLogger.debug("Player/ProbeAutoSync", "probe skipped: file source videoId=")
+        return
+    }
+    val attemptKey = videoId + "|" + subtitle.url
+    if (probeAutoSyncAttemptedKey == attemptKey) {
+        InAppLogger.debug("Player/ProbeAutoSync", "probe skipped: already attempted videoId=")
+        return
+    }
     probeAutoSyncAttemptedKey = attemptKey
-    if (PlayerTrackPreferenceStorage.loadSubtitleDelayMs(playbackSession.videoId)?.let { it != 0 } == true) return
+    val storedDelay = PlayerTrackPreferenceStorage.loadSubtitleDelayMs(videoId)
+    if (storedDelay?.let { it != 0 } == true) {
+        InAppLogger.debug("Player/ProbeAutoSync", "probe skipped: stored delay ms videoId=")
+        return
+    }
+    InAppLogger.info("Player/ProbeAutoSync", "probe started videoId=")
     val body = runCatching {
         httpGetTextWithHeaders(
             url = subtitle.url,
             headers = sanitizePlaybackHeaders(activeSourceHeaders),
         )
-    }.getOrNull() ?: return
-    val cues = runCatching { PlayerSubtitleCueParser.parse(body, subtitle.url) }.getOrNull() ?: return
-    val envelope = readProbeAudioEnvelope(
-        sourceUrl = activeSourceUrl,
-        headers = activeSourceHeaders,
-        windowStartMs = ProbeAutoSyncAligner.PROBE_WINDOW_START_MS,
-        windowMs = ProbeAutoSyncAligner.PROBE_WINDOW_MS,
-    ) ?: return
+    }.getOrNull()
+    if (body == null) {
+        InAppLogger.warn("Player/ProbeAutoSync", "probe failed: subtitle fetch videoId=")
+        return
+    }
+    val cues = runCatching { PlayerSubtitleCueParser.parse(body, subtitle.url) }.getOrNull()
+    if (cues == null) {
+        InAppLogger.warn("Player/ProbeAutoSync", "probe failed: subtitle parse videoId=")
+        return
+    }
+    val envelope = runCatching {
+        readProbeAudioEnvelope(
+            sourceUrl = activeSourceUrl,
+            headers = activeSourceHeaders,
+            windowStartMs = ProbeAutoSyncAligner.PROBE_WINDOW_START_MS,
+            windowMs = ProbeAutoSyncAligner.PROBE_WINDOW_MS,
+        )
+    }.getOrNull()
+    if (envelope == null) {
+        InAppLogger.warn("Player/ProbeAutoSync", "probe failed: audio envelope videoId=")
+        return
+    }
     val binCount = (ProbeAutoSyncAligner.PROBE_WINDOW_MS / ProbeAutoSyncAligner.BIN_MS).toInt()
     val speech = ProbeAutoSyncAligner.speechEnvelope(envelope.rms.take(binCount))
     val speechPadded = if (speech.size < binCount) {
@@ -122,7 +153,14 @@ private suspend fun PlayerScreenRuntime.runProbeAutoSyncIfNeeded() {
         windowStartMs = envelope.windowStartMs,
         binCount = binCount,
     )
-    val delayMs = ProbeAutoSyncAligner.bestDelayMs(speechPadded, cueEnv) ?: return
+    val delayMs = ProbeAutoSyncAligner.bestDelayMs(speechPadded, cueEnv)
+    if (delayMs == null) {
+        val speechBins = speechPadded.count { it }
+        val cueBins = cueEnv.count { it }
+        InAppLogger.warn("Player/ProbeAutoSync", "probe abstained: no alignment speechBins= cueBins= binCount= videoId=")
+        return
+    }
+    InAppLogger.info("Player/ProbeAutoSync", "probe applied delayMs= videoId=")
     setSubtitleDelay(delayMs)
 }
 
