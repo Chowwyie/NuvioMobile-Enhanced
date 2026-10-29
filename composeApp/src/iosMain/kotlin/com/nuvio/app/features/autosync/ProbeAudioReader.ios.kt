@@ -26,6 +26,7 @@ import platform.Foundation.NSFileManager
 import platform.Foundation.NSNumber
 import platform.Foundation.NSTemporaryDirectory
 import platform.Foundation.NSURL
+import platform.Foundation.NSSelectorFromString
 import platform.Foundation.NSUUID
 import kotlinx.cinterop.CPointerVar
 import kotlinx.cinterop.addressOf
@@ -203,12 +204,17 @@ private suspend fun readAssetBins(
         AV_LINEAR_PCM_IS_FLOAT_KEY to false,
         AV_LINEAR_PCM_IS_NON_INTERLEAVED_KEY to false,
     )
-    // AVAsset.tracks is not exposed to Kotlin/Native, but the "tracks" key
-    // is already loaded above (awaitTracks), so read it back via KVC.
-    val audioTracks = (asset.valueForKey("tracks") as? List<*>)
+    // AVAsset.tracks and AVAssetTrack.mediaType are not exposed to
+    // Kotlin/Native, and NSObject KVC (valueForKey) is not either
+    // (round 3 failed on both). Fetch both via core NSObject message
+    // dispatch (performSelector) instead, after awaitTracks() loads
+    // the "tracks" key above.
+    val tracksSel = NSSelectorFromString("tracks") ?: return false
+    val mediaTypeSel = NSSelectorFromString("mediaType") ?: return false
+    val audioTracks = (asset.performSelector(tracksSel) as? List<*>)
         .orEmpty()
         .filterIsInstance<AVAssetTrack>()
-        .filter { it.mediaType == AVMediaTypeAudio }
+        .filter { (it.performSelector(mediaTypeSel) as? String) == AVMediaTypeAudio }
     if (audioTracks.isEmpty()) return false
     val output = AVAssetReaderAudioMixOutput(audioTracks, outputSettings)
     val reader = memScoped {
