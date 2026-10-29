@@ -273,6 +273,8 @@ internal class PlayerScreenRuntime(
     var trackPreferenceRestoreApplied by mutableStateOf(false)
     var subtitleDelayMs by mutableStateOf(0)
     var subtitleAutoSyncState by mutableStateOf(SubtitleAutoSyncUiState())
+    /** Key of the last probe autosync attempt (video + subtitle URL); probes run once per playback. */
+    var probeAutoSyncAttemptedKey: String? = null
     var showSubtitleSyncByEar by mutableStateOf(false)
     var subtitleSyncHeardPositionMs by mutableStateOf<Long?>(null)
     var subtitleSyncSawPositionMs by mutableStateOf<Long?>(null)

@@ -1344,6 +1344,7 @@
     <string name="mini_player_expand">Open full screen player</string>
     <string name="settings_playback_preferred_audio_language">Preferred Audio Language</string>
     <string name="settings_playback_preferred_subtitle_language">Preferred Language</string>
+    <string name="settings_playback_probe_auto_sync_language">AutoSync language</string>
     <string name="settings_playback_presets">Presets</string>
     <string name="settings_playback_regex_matches_against">Matches against stream name/title/description/addon/url. Example: 4K|2160p|Remux</string>
     <string name="settings_playback_regex_pattern">Regex Pattern</string>

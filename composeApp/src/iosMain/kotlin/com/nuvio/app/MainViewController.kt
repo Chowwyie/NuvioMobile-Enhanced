@@ -7,6 +7,7 @@ import androidx.compose.ui.window.ComposeUIViewController
 import com.nuvio.app.core.ui.LocalFold
 import com.nuvio.app.core.ui.LocalVerticalBarPadding
 import com.nuvio.app.core.ui.NativeProfileSwitcherController
+import com.nuvio.app.features.autosync.AutoSyncPreferencesIos
 import com.nuvio.app.features.profiles.ProfileBiometricAuth
 import com.nuvio.app.navigation.AppRoute
 import platform.UIKit.UIColor
@@ -126,5 +127,6 @@ private fun nuvioComposeViewController(
     },
 ).apply {
     ProfileBiometricAuth.initialize(this)
+    AutoSyncPreferencesIos.initialize()
     view.backgroundColor = nuvioBackgroundColor
 }

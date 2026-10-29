@@ -6,6 +6,9 @@ import androidx.compose.runtime.LaunchedEffect
 import com.nuvio.app.features.autosync.AutoSyncPlayerController
 import com.nuvio.app.features.autosync.AutoSyncPreferencesRepository
 import com.nuvio.app.features.autosync.AutoSyncSubtitleCandidate
+import com.nuvio.app.features.autosync.ProbeAutoSyncAligner
+import com.nuvio.app.features.autosync.readProbeAudioEnvelope
+import com.nuvio.app.features.addons.httpGetTextWithHeaders
 import kotlinx.coroutines.flow.collect
 
 private fun List<AddonSubtitle>.toAutoSyncCandidates(): List<AutoSyncSubtitleCandidate> =
@@ -73,6 +76,63 @@ internal fun PlayerScreenRuntime.BindAutoSyncRuntimeEffects() {
             )
         }
     }
+    LaunchedEffect(playerController, selectedAddonSubtitleId, addonSubtitles) {
+        runProbeAutoSyncIfNeeded()
+    }
+}
+
+/**
+ * Audio-probe autosync. Runs once per playback when the probe language setting
+ * is set, the selected subtitle is an OpenSubtitles candidate in that language,
+ * and no explicit manual delay is stored for this video (a reset delay of 0
+ * re-enables probing). One short audio window is measured against the subtitle
+ * cues and the resulting constant offset is applied as a subtitle delay.
+ */
+private suspend fun PlayerScreenRuntime.runProbeAutoSyncIfNeeded() {
+    AutoSyncPreferencesRepository.ensureLoaded()
+    val probeLanguage = AutoSyncPreferencesRepository.probeAutoSyncLanguage.value
+    if (probeLanguage.isBlank() || probeLanguage == SubtitleLanguageOption.NONE) return
+    val subtitle = selectedAddonSubtitle ?: return
+    if (!subtitle.isOpenSubtitles()) return
+    if (!SubtitleLanguageMatching.matchesLanguageCode(subtitle.language, probeLanguage)) return
+    if (activeSourceUrl.startsWith("file:")) return
+    val attemptKey = playbackSession.videoId + "|" + subtitle.url
+    if (probeAutoSyncAttemptedKey == attemptKey) return
+    probeAutoSyncAttemptedKey = attemptKey
+    if (PlayerTrackPreferenceStorage.loadSubtitleDelayMs(playbackSession.videoId)?.let { it != 0 } == true) return
+    val body = runCatching {
+        httpGetTextWithHeaders(
+            url = subtitle.url,
+            headers = sanitizePlaybackHeaders(activeSourceHeaders),
+        )
+    }.getOrNull() ?: return
+    val cues = runCatching { PlayerSubtitleCueParser.parse(body, subtitle.url) }.getOrNull() ?: return
+    val envelope = readProbeAudioEnvelope(
+        sourceUrl = activeSourceUrl,
+        headers = activeSourceHeaders,
+        windowStartMs = ProbeAutoSyncAligner.PROBE_WINDOW_START_MS,
+        windowMs = ProbeAutoSyncAligner.PROBE_WINDOW_MS,
+    ) ?: return
+    val binCount = (ProbeAutoSyncAligner.PROBE_WINDOW_MS / ProbeAutoSyncAligner.BIN_MS).toInt()
+    val speech = ProbeAutoSyncAligner.speechEnvelope(envelope.rms.take(binCount))
+    val speechPadded = if (speech.size < binCount) {
+        speech + BooleanArray(binCount - speech.size)
+    } else {
+        speech
+    }
+    val cueEnv = ProbeAutoSyncAligner.cueEnvelope(
+        cues = cues,
+        windowStartMs = envelope.windowStartMs,
+        binCount = binCount,
+    )
+    val delayMs = ProbeAutoSyncAligner.bestDelayMs(speechPadded, cueEnv) ?: return
+    setSubtitleDelay(delayMs)
+}
+
+/** The probe only ever syncs OpenSubtitles candidates, by addon name or subtitle host. */
+private fun AddonSubtitle.isOpenSubtitles(): Boolean {
+    if (addonName?.contains("opensubtitles", ignoreCase = true) == true) return true
+    return url.contains("opensubtitles", ignoreCase = true)
 }
 
 /** The user picked an addon subtitle: let AutoSync check it without replacing their choice. */
