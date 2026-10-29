@@ -409,7 +409,7 @@ kotlin {
         iosTarget.binaries.framework {
             baseName = "ComposeApp"
             isStatic = true
-            freeCompilerArgs += listOf("-Xbinary=bundleId=$iosFrameworkBundleId", "-Xdisable-phases=Devirtualization")
+            freeCompilerArgs += listOf("-Xbinary=bundleId=$iosFrameworkBundleId")
 
             // Biometric authentication and the profile PIN cache use Apple Security,
             // LocalAuthentication, and CoreFoundation APIs on every iOS distribution.
