@@ -11,6 +11,8 @@ on:
           - Debug
           - Release
         default: Release
+  push:
+    branches: [remove-delay-cap]
 
 permissions:
   contents: read
@@ -21,13 +23,13 @@ concurrency:
 
 jobs:
   build:
-    name: Build unsigned full ${{ inputs.configuration }} IPA
+    name: Build unsigned full ${{ inputs.configuration || 'Release' }} IPA
     runs-on: xcode-27
-    timeout-minutes: ${{ inputs.configuration == 'Release' && 180 || 30 }}
+    timeout-minutes: ${{ (inputs.configuration || 'Release') == 'Release' && 180 || 30 }}
     env:
       DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
       GRADLE_OPTS: -Dfile.encoding=UTF-8
-      IOS_CONFIGURATION: ${{ inputs.configuration }}
+      IOS_CONFIGURATION: ${{ inputs.configuration || 'Release' }}
       KOTLIN_DAEMON_JVMARGS: -Xmx1024M
       NUVIO_GRADLE_JVMARGS: -Xmx2048M -Dfile.encoding=UTF-8 -XX:MaxMetaspaceSize=768M -XX:+UseG1GC
       NUVIO_KOTLIN_NATIVE_JVMARGS: -Xmx9216M -XX:+UseG1GC
@@ -86,7 +88,7 @@ jobs:
       - name: Prepare iOS dependencies
         run: ./scripts/prepare-ios-dependencies.sh
 
-      - name: Build unsigned full ${{ inputs.configuration }} IPA
+      - name: Build unsigned full ${{ inputs.configuration || 'Release' }} IPA
         run: |
           (
             while sleep 60; do
@@ -124,7 +126,7 @@ jobs:
       - name: Upload test IPA
         uses: actions/upload-artifact@v7
         with:
-          name: nuvio-test-${{ inputs.configuration }}-ipa-${{ github.sha }}
+          name: nuvio-test-${{ inputs.configuration || 'Release' }}-ipa-${{ github.sha }}
           path: build/ios-ipa/*.ipa
           if-no-files-found: error
           retention-days: 7
