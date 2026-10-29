@@ -77,7 +77,7 @@ internal actual object PlayerTrackPreferenceStorage {
     actual fun saveSubtitleDelayMs(videoId: String, delayMs: Int) {
         val id = videoId.normalizedStorageId() ?: return
         NSUserDefaults.standardUserDefaults.setInteger(
-            delayMs.coerceIn(SUBTITLE_DELAY_MIN_MS, SUBTITLE_DELAY_MAX_MS).toLong(),
+            delayMs.toLong(),
             forKey = scopedKey(subtitleDelayMsKey, id),
         )
     }

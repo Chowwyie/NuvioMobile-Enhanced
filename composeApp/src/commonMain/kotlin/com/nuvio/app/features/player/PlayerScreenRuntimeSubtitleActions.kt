@@ -18,7 +18,7 @@ internal fun PlayerScreenRuntime.fetchAddonSubtitlesForActiveItem() {
 
 internal fun PlayerScreenRuntime.setSubtitleDelay(delayMs: Int) {
     (playerController as? AutoSyncPlayerController)?.cancelForManualSubtitleDelay() // AutoSync hook
-    val clamped = delayMs.coerceIn(SUBTITLE_DELAY_MIN_MS, SUBTITLE_DELAY_MAX_MS)
+    val clamped = delayMs
     subtitleDelayMs = clamped
     PlayerTrackPreferenceStorage.saveSubtitleDelayMs(playbackSession.videoId, clamped)
     playerController?.setSubtitleDelayMs(clamped)
@@ -66,7 +66,6 @@ internal fun PlayerScreenRuntime.applySubtitleAutoSyncCue(cue: SubtitleSyncCue) 
     val capturedPositionMs = subtitleAutoSyncState.capturedPositionMs ?: return
     val newDelayMs = (capturedPositionMs - cue.startTimeMs - SUBTITLE_AUTO_SYNC_REACTION_COMPENSATION_MS)
         .toInt()
-        .coerceIn(SUBTITLE_DELAY_MIN_MS, SUBTITLE_DELAY_MAX_MS)
     setSubtitleDelay(newDelayMs)
 }
 
@@ -97,7 +96,6 @@ private fun PlayerScreenRuntime.applySubtitleSyncByEarIfReady() {
     val heardMs = subtitleSyncHeardPositionMs ?: return
     val sawMs = subtitleSyncSawPositionMs ?: return
     val newDelayMs = (subtitleDelayMs.toLong() + heardMs - sawMs)
-        .coerceIn(SUBTITLE_DELAY_MIN_MS.toLong(), SUBTITLE_DELAY_MAX_MS.toLong())
         .toInt()
     setSubtitleDelay(newDelayMs)
     subtitleSyncHeardPositionMs = null

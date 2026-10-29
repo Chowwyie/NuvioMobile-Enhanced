@@ -1622,7 +1622,7 @@ final class MPVPlayerViewController: UIViewController {
     func setSubtitleDelayMs(_ delayMs: Int) {
         lastSubtitleDelayMs = delayMs
         guard mpv != nil else { return }
-        setDoubleProperty("sub-delay", Double(max(-60_000, min(60_000, delayMs))) / 1000.0)
+        setDoubleProperty("sub-delay", Double(delayMs) / 1000.0)
     }
 
     func applySubtitleStyle(

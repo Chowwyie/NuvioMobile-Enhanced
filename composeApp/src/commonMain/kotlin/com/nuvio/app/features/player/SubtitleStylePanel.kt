@@ -108,12 +108,12 @@ fun SubtitleStylePanel(
                 value = formatSubtitleDelay(subtitleDelayMs),
                 onDecrease = {
                     onSubtitleDelayChanged(
-                        (subtitleDelayMs - SUBTITLE_DELAY_STEP_MS).coerceAtLeast(SUBTITLE_DELAY_MIN_MS),
+                        (subtitleDelayMs - SUBTITLE_DELAY_STEP_MS),
                     )
                 },
                 onIncrease = {
                     onSubtitleDelayChanged(
-                        (subtitleDelayMs + SUBTITLE_DELAY_STEP_MS).coerceAtMost(SUBTITLE_DELAY_MAX_MS),
+                        (subtitleDelayMs + SUBTITLE_DELAY_STEP_MS),
                     )
                 },
             )

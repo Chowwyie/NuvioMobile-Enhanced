@@ -347,7 +347,7 @@ actual fun PlatformPlayerSurface(
             }
 
             override fun setSubtitleDelayMs(delayMs: Int) {
-                val targetMs = delayMs.coerceIn(SUBTITLE_DELAY_MIN_MS, SUBTITLE_DELAY_MAX_MS)
+                val targetMs = delayMs
                 InAppLogger.info("Player/iOS", "set subtitle delay ms=$targetMs")
                 bridge.setSubtitleDelayMs(targetMs)
             }

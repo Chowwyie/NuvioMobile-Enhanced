@@ -85,7 +85,7 @@ internal actual object PlayerTrackPreferenceStorage {
         val id = videoId.normalizedStorageId() ?: return
         preferences
             ?.edit()
-            ?.putInt(scopedKey(subtitleDelayMsKey, id), delayMs.coerceIn(SUBTITLE_DELAY_MIN_MS, SUBTITLE_DELAY_MAX_MS))
+            ?.putInt(scopedKey(subtitleDelayMsKey, id), delayMs)
             ?.apply()
     }
 

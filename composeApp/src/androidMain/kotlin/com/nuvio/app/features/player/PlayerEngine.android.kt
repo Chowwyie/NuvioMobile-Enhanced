@@ -1358,7 +1358,7 @@ private fun ExoPlayerSurface(
                 }
 
                 override fun setSubtitleDelayMs(delayMs: Int) {
-                    val targetMs = delayMs.coerceIn(SUBTITLE_DELAY_MIN_MS, SUBTITLE_DELAY_MAX_MS)
+                    val targetMs = delayMs
                     InAppLogger.info("ExoPlayer/Android", "set subtitle delay ms=$targetMs")
                     subtitleDelayMs = targetMs
                 }
@@ -2389,7 +2389,7 @@ private class NuvioLibmpvView(
             }
 
             override fun setSubtitleDelayMs(delayMs: Int) {
-                val targetMs = delayMs.coerceIn(SUBTITLE_DELAY_MIN_MS, SUBTITLE_DELAY_MAX_MS)
+                val targetMs = delayMs
                 InAppLogger.info("MPV/Android", "set subtitle delay ms=$targetMs")
                 executeMpv {
                     mpv.setPropertyDouble("sub-delay", targetMs / 1000.0)

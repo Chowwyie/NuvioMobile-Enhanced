@@ -34,10 +34,7 @@ internal fun PlayerScreenRuntime.configureAutoSyncController(
             persistAddonSubtitlePreference(appliedSubtitle)
         }
 
-        val appliedDelayMs = delayMs.coerceIn(
-            SUBTITLE_DELAY_MIN_MS,
-            SUBTITLE_DELAY_MAX_MS,
-        )
+        val appliedDelayMs = delayMs
         subtitleDelayMs = appliedDelayMs
         PlayerTrackPreferenceStorage.saveSubtitleDelayMs(
             playbackSession.videoId,
