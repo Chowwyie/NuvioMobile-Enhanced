@@ -24,7 +24,7 @@ concurrency:
 jobs:
   build:
     name: Build unsigned full ${{ inputs.configuration || 'Release' }} IPA
-    runs-on: xcode-27
+    runs-on: xcode-27-xlarge
     timeout-minutes: ${{ (inputs.configuration || 'Release') == 'Release' && 180 || 30 }}
     env:
       DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
