@@ -24,7 +24,7 @@ concurrency:
 jobs:
   build:
     name: Build unsigned full ${{ inputs.configuration || 'Release' }} IPA
-    runs-on: xcode-27-xlarge
+    runs-on: xcode-27
     timeout-minutes: ${{ (inputs.configuration || 'Release') == 'Release' && 180 || 30 }}
     env:
       DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
@@ -32,7 +32,7 @@ jobs:
       IOS_CONFIGURATION: ${{ inputs.configuration || 'Release' }}
       KOTLIN_DAEMON_JVMARGS: -Xmx1024M
       NUVIO_GRADLE_JVMARGS: -Xmx6144M -Dfile.encoding=UTF-8 -XX:MaxMetaspaceSize=768M -XX:+UseG1GC
-      NUVIO_KOTLIN_NATIVE_JVMARGS: -Xmx9216M -XX:+UseG1GC
+      NUVIO_KOTLIN_NATIVE_JVMARGS: -Xmx5120M -XX:+UseG1GC
       RELEASE_PROPERTIES_BASE64: ${{ secrets.NUVIO_LOCAL_PROPERTIES_BASE64 }}
       CONTRIBUTIONS_URL: https://api.github.com/repos/luqmanfadlli/NuvioMobile-Enhanced/contributors?per_page=100
 
