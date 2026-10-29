@@ -1,6 +1,5 @@
 package com.nuvio.app.features.autosync
 
-import com.nuvio.app.features.player.SubtitleLanguageOption
 import com.nuvio.app.features.profiles.ProfileRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -26,9 +25,6 @@ internal object AutoSyncPreferencesRepository {
     private val _syncToleranceMs = MutableStateFlow(0)
     val syncToleranceMs: StateFlow<Int> = _syncToleranceMs.asStateFlow()
 
-    /** Probe autosync language: NONE means the audio probe never runs. */
-    private val _probeAutoSyncLanguage = MutableStateFlow(SubtitleLanguageOption.NONE)
-    val probeAutoSyncLanguage: StateFlow<String> = _probeAutoSyncLanguage.asStateFlow()
 
     private var loadedProfileId: Int? = null
     private var loadPersistedValue: (() -> Boolean?)? = null
@@ -37,8 +33,6 @@ internal object AutoSyncPreferencesRepository {
     private var saveAggressiveModePersistedValue: ((Boolean) -> Unit)? = null
     private var loadSyncTolerancePersistedValue: (() -> Int?)? = null
     private var saveSyncTolerancePersistedValue: ((Int) -> Unit)? = null
-    private var loadProbeLanguagePersistedValue: (() -> String?)? = null
-    private var saveProbeLanguagePersistedValue: ((String) -> Unit)? = null
     private var lastStartupSessionKey: Int? = null
     private var lastStartupPlaybackKey: String? = null
 
@@ -49,8 +43,6 @@ internal object AutoSyncPreferencesRepository {
         saveAggressiveMode: (Boolean) -> Unit = {},
         loadSyncToleranceMs: () -> Int? = { null },
         saveSyncToleranceMs: (Int) -> Unit = {},
-        loadProbeLanguage: () -> String? = { null },
-        saveProbeLanguage: (String) -> Unit = {},
     ) {
         loadPersistedValue = load
         savePersistedValue = save
@@ -58,8 +50,6 @@ internal object AutoSyncPreferencesRepository {
         saveAggressiveModePersistedValue = saveAggressiveMode
         loadSyncTolerancePersistedValue = loadSyncToleranceMs
         saveSyncTolerancePersistedValue = saveSyncToleranceMs
-        loadProbeLanguagePersistedValue = loadProbeLanguage
-        saveProbeLanguagePersistedValue = saveProbeLanguage
         loadedProfileId = null
     }
 
@@ -71,8 +61,6 @@ internal object AutoSyncPreferencesRepository {
         _aggressiveMode.value = loadAggressiveModePersistedValue?.invoke() ?: true
         _syncToleranceMs.value = loadSyncTolerancePersistedValue?.invoke()
             ?.takeIf { it in syncToleranceOptionsMs } ?: 0
-        _probeAutoSyncLanguage.value = loadProbeLanguagePersistedValue?.invoke()
-            ?.takeIf { it.isNotBlank() } ?: SubtitleLanguageOption.NONE
         loadedProfileId = profileId
         lastStartupSessionKey = null
         lastStartupPlaybackKey = null
@@ -97,14 +85,6 @@ internal object AutoSyncPreferencesRepository {
         if (toleranceMs !in syncToleranceOptionsMs || _syncToleranceMs.value == toleranceMs) return
         _syncToleranceMs.value = toleranceMs
         saveSyncTolerancePersistedValue?.invoke(toleranceMs)
-    }
-
-    fun setProbeAutoSyncLanguage(language: String) {
-        ensureLoaded()
-        val value = language.takeIf { it.isNotBlank() } ?: SubtitleLanguageOption.NONE
-        if (_probeAutoSyncLanguage.value == value) return
-        _probeAutoSyncLanguage.value = value
-        saveProbeLanguagePersistedValue?.invoke(value)
     }
 
     fun claimStartupRun(sessionKey: Int, playbackKey: String): Boolean {

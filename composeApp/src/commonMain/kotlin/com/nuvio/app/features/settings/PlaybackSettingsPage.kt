@@ -75,7 +75,6 @@ import com.nuvio.app.features.player.PlayerSettingsRepository
 import com.nuvio.app.features.player.STREAM_AUTO_PLAY_TIMEOUT_VALUES
 import com.nuvio.app.features.player.SubtitleBackgroundColorSwatches
 import com.nuvio.app.features.player.SubtitleColorSwatches
-import com.nuvio.app.features.autosync.AutoSyncPreferencesRepository
 import com.nuvio.app.features.player.SubtitleLanguageOption
 import com.nuvio.app.features.player.formatPlaybackSpeedLabel
 import com.nuvio.app.features.player.languageLabelForCode
@@ -351,11 +350,6 @@ private fun PlaybackSettingsSection(
     var showSecondaryAudioDialog by remember { mutableStateOf(false) }
     var showPreferredSubtitleDialog by remember { mutableStateOf(false) }
     var showSecondarySubtitleDialog by remember { mutableStateOf(false) }
-    var showProbeAutoSyncDialog by remember { mutableStateOf(false) }
-    val probeAutoSyncLanguage by remember {
-        AutoSyncPreferencesRepository.ensureLoaded()
-        AutoSyncPreferencesRepository.probeAutoSyncLanguage
-    }.collectAsStateWithLifecycle()
     var showSubtitleTextColorDialog by remember { mutableStateOf(false) }
     var showSubtitleBackgroundColorDialog by remember { mutableStateOf(false) }
     var showSubtitleOutlineColorDialog by remember { mutableStateOf(false) }
@@ -689,19 +683,6 @@ private fun PlaybackSettingsSection(
                     isTablet = isTablet,
                     onClick = { showSecondarySubtitleDialog = true },
                 )
-                if (isIos) {
-                    SettingsGroupDivider(isTablet = isTablet)
-                    SettingsNavigationRow(
-                        title = stringResource(Res.string.settings_playback_probe_auto_sync_language),
-                        description = when (probeAutoSyncLanguage) {
-                            SubtitleLanguageOption.NONE -> stringResource(Res.string.settings_playback_option_none)
-                            else -> languageLabelForCode(probeAutoSyncLanguage)
-                        },
-                        enabled = subtitleLanguageEnabled,
-                        isTablet = isTablet,
-                        onClick = { showProbeAutoSyncDialog = true },
-                    )
-                }
                 if (!isIos) {
                     SettingsGroupDivider(isTablet = isTablet)
                     AutoSyncPlaybackSettingsRows( // AutoSync hook
@@ -1805,23 +1786,6 @@ private fun PlaybackSettingsSection(
                 showPreferredSubtitleDialog = false
             },
             onDismiss = { showPreferredSubtitleDialog = false },
-        )
-    }
-
-    if (showProbeAutoSyncDialog) {
-        LanguageSelectionDialog(
-            title = stringResource(Res.string.settings_playback_probe_auto_sync_language),
-            options = listOf(
-                LanguageSelectionOption(SubtitleLanguageOption.NONE, stringResource(Res.string.settings_playback_option_none)),
-            ) + AvailableLanguageOptions.map { option ->
-                LanguageSelectionOption(option.code, stringResource(option.labelRes))
-            },
-            selectedValue = probeAutoSyncLanguage,
-            onSelect = { value ->
-                AutoSyncPreferencesRepository.setProbeAutoSyncLanguage(value ?: SubtitleLanguageOption.NONE)
-                showProbeAutoSyncDialog = false
-            },
-            onDismiss = { showProbeAutoSyncDialog = false },
         )
     }
 

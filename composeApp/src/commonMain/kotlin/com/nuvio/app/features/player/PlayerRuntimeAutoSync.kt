@@ -82,19 +82,16 @@ internal fun PlayerScreenRuntime.BindAutoSyncRuntimeEffects() {
 }
 
 /**
- * Audio-probe autosync. Runs once per playback when the probe language setting
- * is set, the selected subtitle is an OpenSubtitles candidate in that language,
- * and no explicit manual delay is stored for this video (a reset delay of 0
- * re-enables probing). One short audio window is measured against the subtitle
- * cues and the resulting constant offset is applied as a subtitle delay.
+ * Audio-probe autosync. Runs once per playback for any selected OpenSubtitles
+ * candidate, in whatever language it is: the selection itself is the intent,
+ * so there is no language condition. Skipped when an explicit manual delay is
+ * stored for this video (a reset delay of 0 re-enables probing). One short
+ * audio window is measured against the subtitle cues and the resulting
+ * constant offset is applied as a subtitle delay.
  */
 private suspend fun PlayerScreenRuntime.runProbeAutoSyncIfNeeded() {
-    AutoSyncPreferencesRepository.ensureLoaded()
-    val probeLanguage = AutoSyncPreferencesRepository.probeAutoSyncLanguage.value
-    if (probeLanguage.isBlank() || probeLanguage == SubtitleLanguageOption.NONE) return
     val subtitle = selectedAddonSubtitle ?: return
     if (!subtitle.isOpenSubtitles()) return
-    if (!SubtitleLanguageMatching.matchesLanguageCode(subtitle.language, probeLanguage)) return
     if (activeSourceUrl.startsWith("file:")) return
     val attemptKey = playbackSession.videoId + "|" + subtitle.url
     if (probeAutoSyncAttemptedKey == attemptKey) return
