@@ -1,3 +1,5 @@
+@file:OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
+
 package com.nuvio.app.features.autosync
 
 import kotlinx.cinterop.ByteVar
@@ -13,17 +15,9 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import platform.AVFoundation.AVAssetReader
 import platform.AVFoundation.AVAssetReaderStatusReading
 import platform.AVFoundation.AVAssetReaderTrackOutput
-import platform.AVFoundation.AVFormatIDKey
-import platform.AVFoundation.AVLinearPCMBitDepthKey
-import platform.AVFoundation.AVLinearPCMIsFloatKey
-import platform.AVFoundation.AVLinearPCMIsNonInterleavedKey
 import platform.AVFoundation.AVKeyValueStatusLoaded
 import platform.AVFoundation.AVMediaTypeAudio
-import platform.AVFoundation.AVNumberOfChannelsKey
-import platform.AVFoundation.AVSampleRateKey
 import platform.AVFoundation.AVURLAsset
-import platform.AVFoundation.AVURLAssetHTTPHeaderFieldsKey
-import platform.CoreAudio.kAudioFormatLinearPCM
 import platform.CoreMedia.CMBlockBufferGetDataPointer
 import platform.CoreMedia.CMSampleBufferGetDataBuffer
 import platform.CoreMedia.CMSampleBufferGetPresentationTimeStamp
@@ -32,19 +26,37 @@ import platform.CoreMedia.CMTimeMakeWithSeconds
 import platform.CoreMedia.CMTimeRangeMake
 import platform.Foundation.NSData
 import platform.Foundation.NSFileManager
-import platform.Foundation.NSMutableURLRequest
 import platform.Foundation.NSNumber
 import platform.Foundation.NSTemporaryDirectory
 import platform.Foundation.NSURL
-import platform.Foundation.NSURLSession
 import platform.Foundation.NSUUID
-import platform.Foundation.fileURLWithPath
-import platform.Foundation.setValue
+import io.ktor.client.HttpClient
+import io.ktor.client.call.body
+import io.ktor.client.engine.darwin.Darwin
+import io.ktor.client.request.get
+import io.ktor.client.request.header
+import io.ktor.http.isSuccess
+import kotlinx.cinterop.CValue
+import kotlinx.cinterop.usePinned
+import platform.Foundation.writeToFile
 import kotlin.coroutines.resume
 import kotlin.math.sqrt
 
 private const val PROBE_SAMPLE_RATE = 16000.0
 private const val BYTES_PER_SAMPLE = 2
+// Kotlin/Native does not expose these plain extern NSString* constants from
+// AVFoundation, so use their literal values (each constant's value is its own name).
+private const val AV_FORMAT_ID_KEY = "AVFormatIDKey"
+private const val AV_SAMPLE_RATE_KEY = "AVSampleRateKey"
+private const val AV_NUMBER_OF_CHANNELS_KEY = "AVNumberOfChannelsKey"
+private const val AV_LINEAR_PCM_BIT_DEPTH_KEY = "AVLinearPCMBitDepthKey"
+private const val AV_LINEAR_PCM_IS_FLOAT_KEY = "AVLinearPCMIsFloatKey"
+private const val AV_LINEAR_PCM_IS_NON_INTERLEAVED_KEY = "AVLinearPCMIsNonInterleavedKey"
+private const val AV_URL_ASSET_HTTP_HEADER_FIELDS_KEY = "AVURLAssetHTTPHeaderFieldsKey"
+// 'lpcm' as a four-char code.
+private const val LPCM_FORMAT_ID = 1819304813u
+
+private val probeHttpClient by lazy { HttpClient(Darwin) }
 
 /**
  * iOS audio probe. Two paths, one result:
@@ -102,7 +114,7 @@ private suspend fun readRemoteFileIntoBins(
     counts: IntArray,
 ): Boolean {
     val nsUrl = NSURL(string = sourceUrl) ?: return false
-    val options: Map<Any?, Any?> = mapOf(AVURLAssetHTTPHeaderFieldsKey to headers)
+    val options: Map<Any?, Any?> = mapOf(AV_URL_ASSET_HTTP_HEADER_FIELDS_KEY to headers)
     val asset = AVURLAsset(uRL = nsUrl, options = options)
     val timeRange = CMTimeRangeMake(
         CMTimeMakeWithSeconds(windowStartMs / 1000.0, 1000),
@@ -150,7 +162,7 @@ private suspend fun readHlsIntoBins(
         for ((index, segment) in needed.withIndex()) {
             val data = fetchData(segment.url, headers) ?: continue
             val path = tmpDir + "seg-$index.ts"
-            if (!data.writeToFile(path, atomically = true)) continue
+            if (!data.toNSData().writeToFile(path, atomically = true)) continue
             val asset = AVURLAsset(uRL = NSURL.fileURLWithPath(path), options = null)
             if (readAssetBins(asset, null, false, segment.startMs, windowStartMs, binCount, sumSq, counts)) {
                 anySegment = true
@@ -169,7 +181,7 @@ private suspend fun readHlsIntoBins(
  */
 private suspend fun readAssetBins(
     asset: AVURLAsset,
-    timeRange: platform.CoreMedia.CMTimeRange?,
+    timeRange: CValue<platform.CoreMedia.CMTimeRange>?,
     absolutePts: Boolean,
     baseMs: Long,
     windowStartMs: Long,
@@ -178,14 +190,14 @@ private suspend fun readAssetBins(
     counts: IntArray,
 ): Boolean {
     if (!asset.awaitTracks()) return false
-    val track = asset.tracksWithMediaType(AVMediaTypeAudio).firstOrNull() ?: return false
+    val track = asset.tracks.firstOrNull { it.mediaType == AVMediaTypeAudio } ?: return false
     val outputSettings: Map<Any?, Any?> = mapOf(
-        AVFormatIDKey to NSNumber(unsignedInt = kAudioFormatLinearPCM),
-        AVSampleRateKey to PROBE_SAMPLE_RATE,
-        AVNumberOfChannelsKey to 1,
-        AVLinearPCMBitDepthKey to 16,
-        AVLinearPCMIsFloatKey to false,
-        AVLinearPCMIsNonInterleavedKey to false,
+        AV_FORMAT_ID_KEY to NSNumber(unsignedInt = LPCM_FORMAT_ID),
+        AV_SAMPLE_RATE_KEY to PROBE_SAMPLE_RATE,
+        AV_NUMBER_OF_CHANNELS_KEY to 1,
+        AV_LINEAR_PCM_BIT_DEPTH_KEY to 16,
+        AV_LINEAR_PCM_IS_FLOAT_KEY to false,
+        AV_LINEAR_PCM_IS_NON_INTERLEAVED_KEY to false,
     )
     val output = AVAssetReaderTrackOutput(track, outputSettings)
     val reader = memScoped {
@@ -215,8 +227,9 @@ private suspend fun readAssetBins(
         val bytes = memScoped {
             val dataBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) ?: return@memScoped null
             val totalLength = alloc<ULongVar>()
+            val lengthAtOffset = alloc<ULongVar>()
             val dataPointer = alloc<CPointer<ByteVar>>()
-            if (CMBlockBufferGetDataPointer(dataBuffer, 0uL, null, totalLength.ptr, dataPointer.ptr) != 0) {
+            if (CMBlockBufferGetDataPointer(dataBuffer, 0uL, lengthAtOffset.ptr, totalLength.ptr, dataPointer.ptr) != 0) {
                 null
             } else {
                 val pointer = dataPointer.value ?: return@memScoped null
@@ -251,26 +264,20 @@ private suspend fun AVURLAsset.awaitTracks(): Boolean = suspendCancellableCorout
     }
 }
 
-private suspend fun fetchData(url: String, headers: Map<String, String>): NSData? =
-    suspendCancellableCoroutine { cont ->
-        val nsUrl = NSURL(string = url)
-        if (nsUrl == null) {
-            cont.resume(null)
-            return@suspendCancellableCoroutine
-        }
-        val request = NSMutableURLRequest(uRL = nsUrl)
-        headers.forEach { (field, value) -> request.setValue(value, forHTTPHeaderField = field) }
-        val task = NSURLSession.sharedSession.dataTaskWithRequest(request) { data, _, error ->
-            if (error != null || data == null) cont.resume(null) else cont.resume(data)
-        }
-        cont.invokeOnCancellation { task.cancel() }
-        task.resume()
+private suspend fun fetchData(url: String, headers: Map<String, String>): ByteArray? = try {
+    val response = probeHttpClient.get(url) {
+        headers.forEach { (key, value) -> header(key, value) }
     }
+    if (!response.status.isSuccess()) null else response.body<ByteArray>()
+} catch (_: Exception) {
+    null
+}
 
-private suspend fun fetchText(url: String, headers: Map<String, String>): String? {
-    val data = fetchData(url, headers) ?: return null
-    val bytes = data.bytes ?: return null
-    return runCatching { bytes.readBytes(data.length.toInt()).decodeToString() }.getOrNull()
+private suspend fun fetchText(url: String, headers: Map<String, String>): String? =
+    fetchData(url, headers)?.decodeToString()
+
+private fun ByteArray.toNSData(): NSData = usePinned { pinned ->
+    NSData.create(bytes = pinned.addressOf(0), length = size.toULong())
 }
 
 /** Picks the media playlist for probing: a separate audio rendition if offered, else the cheapest variant. */
