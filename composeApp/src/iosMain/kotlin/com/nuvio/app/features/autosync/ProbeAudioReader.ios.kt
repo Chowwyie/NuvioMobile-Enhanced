@@ -14,9 +14,7 @@ import kotlinx.cinterop.value
 import kotlinx.coroutines.suspendCancellableCoroutine
 import platform.AVFoundation.AVAssetReader
 import platform.AVFoundation.AVAssetReaderStatusReading
-import platform.AVFoundation.AVAssetReaderTrackOutput
 import platform.AVFoundation.AVKeyValueStatusLoaded
-import platform.AVFoundation.AVMediaTypeAudio
 import platform.AVFoundation.AVURLAsset
 import platform.CoreMedia.CMBlockBufferGetDataPointer
 import platform.CoreMedia.CMSampleBufferGetDataBuffer
@@ -24,12 +22,18 @@ import platform.CoreMedia.CMSampleBufferGetPresentationTimeStamp
 import platform.CoreMedia.CMTimeGetSeconds
 import platform.CoreMedia.CMTimeMakeWithSeconds
 import platform.CoreMedia.CMTimeRangeMake
-import platform.Foundation.NSData
 import platform.Foundation.NSFileManager
 import platform.Foundation.NSNumber
 import platform.Foundation.NSTemporaryDirectory
 import platform.Foundation.NSURL
 import platform.Foundation.NSUUID
+import kotlinx.cinterop.CPointerVar
+import kotlinx.cinterop.addressOf
+import kotlinx.cinterop.convert
+import platform.AVFoundation.AVAssetReaderAudioMixOutput
+import platform.posix.fclose
+import platform.posix.fopen
+import platform.posix.fwrite
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.engine.darwin.Darwin
@@ -38,7 +42,6 @@ import io.ktor.client.request.header
 import io.ktor.http.isSuccess
 import kotlinx.cinterop.CValue
 import kotlinx.cinterop.usePinned
-import platform.Foundation.writeToFile
 import kotlin.coroutines.resume
 import kotlin.math.sqrt
 
@@ -162,7 +165,7 @@ private suspend fun readHlsIntoBins(
         for ((index, segment) in needed.withIndex()) {
             val data = fetchData(segment.url, headers) ?: continue
             val path = tmpDir + "seg-$index.ts"
-            if (!data.toNSData().writeToFile(path, atomically = true)) continue
+            if (!data.writeToSegmentFile(path)) continue
             val asset = AVURLAsset(uRL = NSURL.fileURLWithPath(path), options = null)
             if (readAssetBins(asset, null, false, segment.startMs, windowStartMs, binCount, sumSq, counts)) {
                 anySegment = true
@@ -190,7 +193,6 @@ private suspend fun readAssetBins(
     counts: IntArray,
 ): Boolean {
     if (!asset.awaitTracks()) return false
-    val track = asset.tracks.firstOrNull { it.mediaType == AVMediaTypeAudio } ?: return false
     val outputSettings: Map<Any?, Any?> = mapOf(
         AV_FORMAT_ID_KEY to NSNumber(unsignedInt = LPCM_FORMAT_ID),
         AV_SAMPLE_RATE_KEY to PROBE_SAMPLE_RATE,
@@ -199,7 +201,7 @@ private suspend fun readAssetBins(
         AV_LINEAR_PCM_IS_FLOAT_KEY to false,
         AV_LINEAR_PCM_IS_NON_INTERLEAVED_KEY to false,
     )
-    val output = AVAssetReaderTrackOutput(track, outputSettings)
+    val output = AVAssetReaderAudioMixOutput(null, outputSettings)
     val reader = memScoped {
         val error = alloc<ObjCObjectVar<platform.Foundation.NSError?>>()
         AVAssetReader(asset, error.ptr)
@@ -228,7 +230,7 @@ private suspend fun readAssetBins(
             val dataBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) ?: return@memScoped null
             val totalLength = alloc<ULongVar>()
             val lengthAtOffset = alloc<ULongVar>()
-            val dataPointer = alloc<CPointer<ByteVar>>()
+            val dataPointer = alloc<CPointerVar<ByteVar>>()
             if (CMBlockBufferGetDataPointer(dataBuffer, 0uL, lengthAtOffset.ptr, totalLength.ptr, dataPointer.ptr) != 0) {
                 null
             } else {
@@ -276,8 +278,16 @@ private suspend fun fetchData(url: String, headers: Map<String, String>): ByteAr
 private suspend fun fetchText(url: String, headers: Map<String, String>): String? =
     fetchData(url, headers)?.decodeToString()
 
-private fun ByteArray.toNSData(): NSData = usePinned { pinned ->
-    NSData.create(bytes = pinned.addressOf(0), length = size.toULong())
+private fun ByteArray.writeToSegmentFile(path: String): Boolean {
+    val file = fopen(path, "wb") ?: return false
+    return try {
+        if (isEmpty()) return true
+        usePinned { pinned ->
+            fwrite(pinned.addressOf(0), 1.convert(), size.convert(), file).toLong() == size.toLong()
+        }
+    } finally {
+        fclose(file)
+    }
 }
 
 /** Picks the media playlist for probing: a separate audio rendition if offered, else the cheapest variant. */
