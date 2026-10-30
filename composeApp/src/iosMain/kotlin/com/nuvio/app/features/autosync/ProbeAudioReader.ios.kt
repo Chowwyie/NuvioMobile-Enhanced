@@ -11,6 +11,7 @@ import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.readBytes
 import kotlinx.cinterop.value
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import platform.AVFoundation.AVAssetReader
 import platform.AVFoundation.AVAssetReaderStatusReading
@@ -223,24 +224,56 @@ private fun patchU64(boxBytes: ByteArray, offset: Int, value: Long): ByteArray {
 
 // Range fetch that refuses anything but the exact byte count requested, so a
 // server ignoring Range and answering 200 with the whole file can never turn
-// into a multi-gigabyte download.
+// into a multi-gigabyte download. Retries transient failures (3 attempts,
+// 1s apart); every failed attempt logs its reason (status, size, or exception
+// kind) so device failures can be told apart. Never logs the URL.
 private suspend fun fetchRange(
     url: String,
     headers: Map<String, String>,
     start: Long,
     endInclusive: Long,
+): ByteArray? {
+    for (attempt in 1..3) {
+        val bytes = fetchRangeOnce(url, headers, start, endInclusive, attempt)
+        if (bytes != null) {
+            if (attempt > 1) {
+                InAppLogger.debug("Player/ProbeAudioReader", "fetchRange: attempt ${attempt} succeeded start=${start}")
+            }
+            return bytes
+        }
+        if (attempt < 3) {
+            delay(1000)
+        }
+    }
+    return null
+}
+
+private suspend fun fetchRangeOnce(
+    url: String,
+    headers: Map<String, String>,
+    start: Long,
+    endInclusive: Long,
+    attempt: Int,
 ): ByteArray? = try {
     val response = probeHttpClient.get(url) {
         headers.forEach { (key, value) -> header(key, value) }
         header("Range", "bytes=$start-$endInclusive")
     }
     if (!response.status.isSuccess()) {
+        InAppLogger.debug("Player/ProbeAudioReader", "fetchRange: attempt ${attempt} status=${response.status.value} start=${start}")
         null
     } else {
         val bytes = response.body<ByteArray>()
-        if (bytes.size.toLong() == endInclusive - start + 1) bytes else null
+        val expected = endInclusive - start + 1
+        if (bytes.size.toLong() == expected) {
+            bytes
+        } else {
+            InAppLogger.debug("Player/ProbeAudioReader", "fetchRange: attempt ${attempt} size mismatch expected=${expected} got=${bytes.size} start=${start}")
+            null
+        }
     }
-} catch (_: Exception) {
+} catch (e: Exception) {
+    InAppLogger.debug("Player/ProbeAudioReader", "fetchRange: attempt ${attempt} exception kind=${e::class.simpleName} start=${start}")
     null
 }
 
