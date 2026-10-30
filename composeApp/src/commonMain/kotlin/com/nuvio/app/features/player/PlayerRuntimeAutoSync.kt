@@ -95,25 +95,25 @@ private suspend fun PlayerScreenRuntime.runProbeAutoSyncIfNeeded() {
     val videoId = playbackSession.videoId
     val subtitle = selectedAddonSubtitle
     if (subtitle == null) {
-        InAppLogger.debug("Player/ProbeAutoSync", "probe skipped: no addon subtitle videoId=")
+        InAppLogger.debug("Player/ProbeAutoSync", "probe skipped: no addon subtitle videoId=${videoId}")
         return
     }
     if (activeSourceUrl.startsWith("file:")) {
-        InAppLogger.debug("Player/ProbeAutoSync", "probe skipped: file source videoId=")
+        InAppLogger.debug("Player/ProbeAutoSync", "probe skipped: file source videoId=${videoId}")
         return
     }
     val attemptKey = videoId + "|" + subtitle.url
     if (probeAutoSyncAttemptedKey == attemptKey) {
-        InAppLogger.debug("Player/ProbeAutoSync", "probe skipped: already attempted videoId=")
+        InAppLogger.debug("Player/ProbeAutoSync", "probe skipped: already attempted videoId=${videoId}")
         return
     }
     probeAutoSyncAttemptedKey = attemptKey
     val storedDelay = PlayerTrackPreferenceStorage.loadSubtitleDelayMs(videoId)
     if (storedDelay?.let { it != 0 } == true) {
-        InAppLogger.debug("Player/ProbeAutoSync", "probe skipped: stored delay ms videoId=")
+        InAppLogger.debug("Player/ProbeAutoSync", "probe skipped: stored delay ms=${storedDelay} videoId=${videoId}")
         return
     }
-    InAppLogger.info("Player/ProbeAutoSync", "probe started videoId=")
+    InAppLogger.info("Player/ProbeAutoSync", "probe started videoId=${videoId}")
     val body = runCatching {
         httpGetTextWithHeaders(
             url = subtitle.url,
@@ -121,12 +121,12 @@ private suspend fun PlayerScreenRuntime.runProbeAutoSyncIfNeeded() {
         )
     }.getOrNull()
     if (body == null) {
-        InAppLogger.warn("Player/ProbeAutoSync", "probe failed: subtitle fetch videoId=")
+        InAppLogger.warn("Player/ProbeAutoSync", "probe failed: subtitle fetch videoId=${videoId}")
         return
     }
     val cues = runCatching { PlayerSubtitleCueParser.parse(body, subtitle.url) }.getOrNull()
     if (cues == null) {
-        InAppLogger.warn("Player/ProbeAutoSync", "probe failed: subtitle parse videoId=")
+        InAppLogger.warn("Player/ProbeAutoSync", "probe failed: subtitle parse videoId=${videoId}")
         return
     }
     val envelope = runCatching {
@@ -138,7 +138,7 @@ private suspend fun PlayerScreenRuntime.runProbeAutoSyncIfNeeded() {
         )
     }.getOrNull()
     if (envelope == null) {
-        InAppLogger.warn("Player/ProbeAutoSync", "probe failed: audio envelope videoId=")
+        InAppLogger.warn("Player/ProbeAutoSync", "probe failed: audio envelope videoId=${videoId}")
         return
     }
     val binCount = (ProbeAutoSyncAligner.PROBE_WINDOW_MS / ProbeAutoSyncAligner.BIN_MS).toInt()
@@ -157,10 +157,10 @@ private suspend fun PlayerScreenRuntime.runProbeAutoSyncIfNeeded() {
     if (delayMs == null) {
         val speechBins = speechPadded.count { it }
         val cueBins = cueEnv.count { it }
-        InAppLogger.warn("Player/ProbeAutoSync", "probe abstained: no alignment speechBins= cueBins= binCount= videoId=")
+        InAppLogger.warn("Player/ProbeAutoSync", "probe abstained: no alignment speechBins=${speechBins} cueBins=${cueBins} binCount=${binCount} videoId=${videoId}")
         return
     }
-    InAppLogger.info("Player/ProbeAutoSync", "probe applied delayMs= videoId=")
+    InAppLogger.info("Player/ProbeAutoSync", "probe applied delayMs=${delayMs} videoId=${videoId}")
     setSubtitleDelay(delayMs)
 }
 
