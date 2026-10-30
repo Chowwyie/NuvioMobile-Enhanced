@@ -253,20 +253,38 @@ private suspend fun fetchMoovAndFtyp(
     var ftyp: ByteArray? = null
     var pos = 0L
     for (iter in 0 until 200) {
-        val hdr = fetchRange(url, headers, pos, pos + 15) ?: return Pair(ftyp, null)
-        val parsed = parseBoxHeader(hdr, 0) ?: return Pair(ftyp, null)
+        val hdr = fetchRange(url, headers, pos, pos + 15)
+        if (hdr == null) {
+            InAppLogger.debug("Player/ProbeAudioReader", "moov scan: header fetch failed pos=${pos}")
+            return Pair(ftyp, null)
+        }
+        val parsed = parseBoxHeader(hdr, 0)
+        if (parsed == null) {
+            InAppLogger.debug("Player/ProbeAudioReader", "moov scan: header parse failed pos=${pos}")
+            return Pair(ftyp, null)
+        }
         if (parsed.type == "moov") {
-            if (parsed.size > MAX_MOOV_BYTES) return Pair(ftyp, null)
+            if (parsed.size > MAX_MOOV_BYTES) {
+                InAppLogger.debug("Player/ProbeAudioReader", "moov scan: moov too big size=${parsed.size}")
+                return Pair(ftyp, null)
+            }
             val moov = fetchRange(url, headers, pos, pos + parsed.size - 1)
-                ?: return Pair(ftyp, null)
+            if (moov == null) {
+                InAppLogger.debug("Player/ProbeAudioReader", "moov scan: moov fetch failed size=${parsed.size}")
+                return Pair(ftyp, null)
+            }
             return Pair(ftyp, moov)
         }
         if (parsed.type == "ftyp") {
             fetchRange(url, headers, pos, pos + parsed.size - 1)?.let { ftyp = it }
         }
-        if (parsed.size <= 0) return Pair(ftyp, null)
+        if (parsed.size <= 0) {
+            InAppLogger.debug("Player/ProbeAudioReader", "moov scan: zero-size box type=${parsed.type}")
+            return Pair(ftyp, null)
+        }
         pos += parsed.size
     }
+    InAppLogger.debug("Player/ProbeAudioReader", "moov scan: moov not found")
     return Pair(ftyp, null)
 }
 
@@ -293,7 +311,11 @@ private class ParsedMoov(
 private fun parseAudioTrack(moovBox: ByteArray): ParsedMoov? {
     val moovHeader = headerSizeOf(moovBox, 0)
     val moovChildren = childrenOf(moovBox, moovHeader, moovBox.size)
-    val mvhdEntry = moovChildren.firstOrNull { it.first == "mvhd" } ?: return null
+    val mvhdEntry = moovChildren.firstOrNull { it.first == "mvhd" }
+    if (mvhdEntry == null) {
+        InAppLogger.debug("Player/ProbeAudioReader", "moov parse: no mvhd")
+        return null
+    }
     val mvhd = moovBox.copyOfRange(mvhdEntry.second, mvhdEntry.third)
     val mvhdVersion = mvhd[8].toInt()
     val movieTimescale = if (mvhdVersion == 1) mvhd.u32be(28) else mvhd.u32be(20)
@@ -328,7 +350,10 @@ private fun parseAudioTrack(moovBox: ByteArray): ParsedMoov? {
         val stsdEntry = stblChildren.firstOrNull { it.first == "stsd" } ?: continue
         val stsd = moovBox.copyOfRange(stsdEntry.second, stsdEntry.third)
         val stsdContent = stsdEntry.second + headerSizeOf(moovBox, stsdEntry.second)
-        if (moovBox.u32be(stsdContent + 4) != 1L) continue
+        if (moovBox.u32be(stsdContent + 4) != 1L) {
+            InAppLogger.debug("Player/ProbeAudioReader", "audio trak: stsd entries != 1")
+            continue
+        }
         val sttsEntry = stblChildren.firstOrNull { it.first == "stts" } ?: continue
         val sttsContent = sttsEntry.second + headerSizeOf(moovBox, sttsEntry.second)
         val sttsCount = moovBox.u32be(sttsContent + 4).toInt()
@@ -395,6 +420,7 @@ private fun parseAudioTrack(moovBox: ByteArray): ParsedMoov? {
             ),
         )
     }
+    InAppLogger.debug("Player/ProbeAudioReader", "moov parse: no audio trak")
     return null
 }
 
@@ -493,8 +519,15 @@ private suspend fun extractWindowMp4(
     windowMs: Long,
 ): String? {
     val (ftypBox, moovBox) = fetchMoovAndFtyp(sourceUrl, headers)
-    if (moovBox == null) return null
-    val parsed = parseAudioTrack(moovBox) ?: return null
+    if (moovBox == null) {
+        InAppLogger.debug("Player/ProbeAudioReader", "extract: moov fetch failed")
+        return null
+    }
+    val parsed = parseAudioTrack(moovBox)
+    if (parsed == null) {
+        InAppLogger.debug("Player/ProbeAudioReader", "extract: audio trak parse failed")
+        return null
+    }
     val track = parsed.track
     val wStart = windowStartMs * track.timescale / 1000
     val wEnd = (windowStartMs + windowMs) * track.timescale / 1000
@@ -514,17 +547,26 @@ private suspend fun extractWindowMp4(
             idx++
         }
     }
-    if (selected.isEmpty()) return null
+    if (selected.isEmpty()) {
+        InAppLogger.debug("Player/ProbeAudioReader", "extract: no samples in window")
+        return null
+    }
     val ranges = mutableListOf<Pair<Long, Long>>()
     var totalBytes = 0L
     for (s in selected) {
         val (chunk, firstInChunk) = chunkForSample(track.stsc, s.toLong())
-        if (chunk < 1 || chunk > track.chunkOffsets.size) return null
+        if (chunk < 1 || chunk > track.chunkOffsets.size) {
+            InAppLogger.debug("Player/ProbeAudioReader", "extract: chunk map failed sample=${s} chunk=${chunk}")
+            return null
+        }
         var off = track.chunkOffsets[(chunk - 1).toInt()]
         for (i in firstInChunk until s.toLong()) off += track.sampleSizes[i.toInt()]
         val size = track.sampleSizes[s].toLong()
         totalBytes += size
-        if (totalBytes > MAX_WINDOW_BYTES) return null
+        if (totalBytes > MAX_WINDOW_BYTES) {
+            InAppLogger.debug("Player/ProbeAudioReader", "extract: window bytes cap total=${totalBytes}")
+            return null
+        }
         val start = off
         val end = off + size
         val last = ranges.lastOrNull()
@@ -534,15 +576,25 @@ private suspend fun extractWindowMp4(
             ranges.add(Pair(start, end))
         }
     }
-    if (ranges.size > MAX_WINDOW_RANGES) return null
+    if (ranges.size > MAX_WINDOW_RANGES) {
+        InAppLogger.debug("Player/ProbeAudioReader", "extract: ranges cap ranges=${ranges.size}")
+        return null
+    }
     val sampleData = ByteArray(totalBytes.toInt())
     var pos = 0
     for ((start, end) in ranges) {
-        val bytes = fetchRange(sourceUrl, headers, start, end - 1) ?: return null
+        val bytes = fetchRange(sourceUrl, headers, start, end - 1)
+        if (bytes == null) {
+            InAppLogger.debug("Player/ProbeAudioReader", "extract: sample range fetch failed start=${start} end=${end}")
+            return null
+        }
         bytes.copyInto(sampleData, pos)
         pos += bytes.size
     }
-    if (pos != sampleData.size) return null
+    if (pos != sampleData.size) {
+        InAppLogger.debug("Player/ProbeAudioReader", "extract: sample size mismatch pos=${pos} total=${sampleData.size}")
+        return null
+    }
     val sttsEntries = mutableListOf<Pair<Long, Long>>()
     for (d in selectedDeltas) {
         val last = sttsEntries.lastOrNull()
@@ -598,9 +650,15 @@ private suspend fun extractWindowMp4(
     )
     val fileBytes = concatBytes(listOf(ftypBytes, moovFinal, box("mdat", sampleData)))
     val dir = NSTemporaryDirectory() + "probe-audio-" + NSUUID().UUIDString + "/"
-    if (!NSFileManager.defaultManager.createDirectoryAtPath(dir, withIntermediateDirectories = true, attributes = null, error = null)) return null
+    if (!NSFileManager.defaultManager.createDirectoryAtPath(dir, withIntermediateDirectories = true, attributes = null, error = null)) {
+        InAppLogger.debug("Player/ProbeAudioReader", "extract: temp dir failed")
+        return null
+    }
     val path = dir + "window.mp4"
-    if (!fileBytes.writeToSegmentFile(path)) return null
+    if (!fileBytes.writeToSegmentFile(path)) {
+        InAppLogger.debug("Player/ProbeAudioReader", "extract: file write failed")
+        return null
+    }
     return path
 }
 
