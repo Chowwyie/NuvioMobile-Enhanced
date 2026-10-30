@@ -37,6 +37,7 @@ import platform.AVFoundation.AVMediaTypeAudio
 import platform.posix.fclose
 import platform.posix.fopen
 import platform.posix.fwrite
+import com.nuvio.app.core.logging.InAppLogger
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.engine.darwin.Darwin
@@ -109,6 +110,501 @@ private data class HlsSegment(
     val startMs: Long,
 )
 
+
+// ---------------------------------------------------------------------------
+// MP4 window extraction. AVAssetReader cannot read remote URLs (gate runs 7-8
+// proved it: reader creation returns nil for remote assets, works for local
+// files). So for direct-file streams we fetch only the bytes the probe window
+// needs and rebuild a minimal local mp4 holding just that window's audio
+// samples, then decode it with the existing local-file path. Pure box parsing,
+// codec-agnostic (stsd is copied verbatim). Any unsupported structure returns
+// null, and the probe abstains exactly as it does today: no crash, and never
+// a whole-file download. Edit lists (elst) are dropped on purpose: any AAC
+// priming shift they carry is far below the probe's 100 ms bin and, if real,
+// is exactly the constant offset the probe measures.
+// ---------------------------------------------------------------------------
+
+private const val MAX_MOOV_BYTES = 16 * 1024 * 1024L
+private const val MAX_WINDOW_BYTES = 64 * 1024 * 1024L
+private const val MAX_WINDOW_RANGES = 64
+
+private fun ByteArray.u32be(offset: Int): Long {
+    return ((this[offset].toLong() and 0xFF) shl 24) or
+        ((this[offset + 1].toLong() and 0xFF) shl 16) or
+        ((this[offset + 2].toLong() and 0xFF) shl 8) or
+        (this[offset + 3].toLong() and 0xFF)
+}
+
+private fun ByteArray.u64be(offset: Int): Long {
+    var v = 0L
+    for (i in 0 until 8) v = (v shl 8) or (this[offset + i].toLong() and 0xFF)
+    return v
+}
+
+private fun ByteArray.boxTypeAt(offset: Int): String =
+    copyOfRange(offset + 4, offset + 8).decodeToString()
+
+private fun headerSizeOf(bytes: ByteArray, boxStart: Int): Int =
+    if (bytes.u32be(boxStart) == 1L) 16 else 8
+
+private class BoxHeader(val size: Long, val headerSize: Int, val type: String)
+
+private fun parseBoxHeader(bytes: ByteArray, offset: Int): BoxHeader? {
+    if (offset + 8 > bytes.size) return null
+    val size32 = bytes.u32be(offset)
+    val type = bytes.boxTypeAt(offset)
+    if (size32 == 1L) {
+        if (offset + 16 > bytes.size) return null
+        return BoxHeader(bytes.u64be(offset + 8), 16, type)
+    }
+    if (size32 == 0L) return null
+    return BoxHeader(size32, 8, type)
+}
+
+// Children of a box, as (type, boxStart, boxEnd) with absolute positions in
+// [bytes]. Content starts at boxStart + headerSizeOf(bytes, boxStart).
+private fun childrenOf(bytes: ByteArray, start: Int, end: Int): List<Triple<String, Int, Int>> {
+    val out = mutableListOf<Triple<String, Int, Int>>()
+    var pos = start
+    while (pos + 8 <= end) {
+        val header = parseBoxHeader(bytes, pos) ?: break
+        if (header.size < header.headerSize) break
+        if (pos + header.size > end) break
+        out.add(Triple(header.type, pos, (pos + header.size).toInt()))
+        pos += header.size.toInt()
+    }
+    return out
+}
+
+private fun int32be(value: Long): ByteArray = byteArrayOf(
+    ((value shr 24) and 0xFF).toByte(),
+    ((value shr 16) and 0xFF).toByte(),
+    ((value shr 8) and 0xFF).toByte(),
+    (value and 0xFF).toByte(),
+)
+
+private fun int64be(value: Long): ByteArray {
+    val out = ByteArray(8)
+    for (i in 0 until 8) out[i] = ((value shr ((7 - i) * 8)) and 0xFF).toByte()
+    return out
+}
+
+private fun concatBytes(parts: List<ByteArray>): ByteArray {
+    var total = 0
+    for (p in parts) total += p.size
+    val out = ByteArray(total)
+    var pos = 0
+    for (p in parts) {
+        p.copyInto(out, pos)
+        pos += p.size
+    }
+    return out
+}
+
+private fun box(type: String, payload: ByteArray): ByteArray =
+    concatBytes(listOf(int32be((8 + payload.size).toLong()), type.encodeToByteArray(), payload))
+
+private fun fullBox(type: String, payload: ByteArray): ByteArray =
+    box(type, concatBytes(listOf(byteArrayOf(0, 0, 0, 0), payload)))
+
+private fun patchU32(boxBytes: ByteArray, offset: Int, value: Long): ByteArray {
+    val out = boxBytes.copyOf()
+    val b = int32be(value)
+    for (i in 0 until 4) out[offset + i] = b[i]
+    return out
+}
+
+private fun patchU64(boxBytes: ByteArray, offset: Int, value: Long): ByteArray {
+    val out = boxBytes.copyOf()
+    val b = int64be(value)
+    for (i in 0 until 8) out[offset + i] = b[i]
+    return out
+}
+
+// Range fetch that refuses anything but the exact byte count requested, so a
+// server ignoring Range and answering 200 with the whole file can never turn
+// into a multi-gigabyte download.
+private suspend fun fetchRange(
+    url: String,
+    headers: Map<String, String>,
+    start: Long,
+    endInclusive: Long,
+): ByteArray? = try {
+    val response = probeHttpClient.get(url) {
+        headers.forEach { (key, value) -> header(key, value) }
+        header("Range", "bytes=$start-$endInclusive")
+    }
+    if (!response.status.isSuccess()) {
+        null
+    } else {
+        val bytes = response.body<ByteArray>()
+        if (bytes.size.toLong() == endInclusive - start + 1) bytes else null
+    }
+} catch (_: Exception) {
+    null
+}
+
+// Walks top-level boxes by size (never downloading mdat content) until moov
+// is found. Returns (ftyp box or null, moov box or null).
+private suspend fun fetchMoovAndFtyp(
+    url: String,
+    headers: Map<String, String>,
+): Pair<ByteArray?, ByteArray?> {
+    var ftyp: ByteArray? = null
+    var pos = 0L
+    for (iter in 0 until 200) {
+        val hdr = fetchRange(url, headers, pos, pos + 15) ?: return Pair(ftyp, null)
+        val parsed = parseBoxHeader(hdr, 0) ?: return Pair(ftyp, null)
+        if (parsed.type == "moov") {
+            if (parsed.size > MAX_MOOV_BYTES) return Pair(ftyp, null)
+            val moov = fetchRange(url, headers, pos, pos + parsed.size - 1)
+                ?: return Pair(ftyp, null)
+            return Pair(ftyp, moov)
+        }
+        if (parsed.type == "ftyp") {
+            fetchRange(url, headers, pos, pos + parsed.size - 1)?.let { ftyp = it }
+        }
+        if (parsed.size <= 0) return Pair(ftyp, null)
+        pos += parsed.size
+    }
+    return Pair(ftyp, null)
+}
+
+private class ParsedAudioTrack(
+    val timescale: Long,
+    val tkhd: ByteArray,
+    val mdhd: ByteArray,
+    val hdlr: ByteArray,
+    val smhd: ByteArray?,
+    val dinf: ByteArray?,
+    val stsd: ByteArray,
+    val stts: List<Pair<Long, Long>>,
+    val sampleSizes: IntArray,
+    val stsc: List<Triple<Long, Long, Long>>,
+    val chunkOffsets: LongArray,
+)
+
+private class ParsedMoov(
+    val mvhd: ByteArray,
+    val movieTimescale: Long,
+    val track: ParsedAudioTrack,
+)
+
+private fun parseAudioTrack(moovBox: ByteArray): ParsedMoov? {
+    val moovHeader = headerSizeOf(moovBox, 0)
+    val moovChildren = childrenOf(moovBox, moovHeader, moovBox.size)
+    val mvhdEntry = moovChildren.firstOrNull { it.first == "mvhd" } ?: return null
+    val mvhd = moovBox.copyOfRange(mvhdEntry.second, mvhdEntry.third)
+    val mvhdVersion = mvhd[8].toInt()
+    val movieTimescale = if (mvhdVersion == 1) mvhd.u32be(28) else mvhd.u32be(20)
+    for ((trakType, trakStart, trakEnd) in moovChildren) {
+        if (trakType != "trak") continue
+        val trakHeader = headerSizeOf(moovBox, trakStart)
+        val trakChildren = childrenOf(moovBox, trakStart + trakHeader, trakEnd)
+        val tkhdEntry = trakChildren.firstOrNull { it.first == "tkhd" } ?: continue
+        val tkhd = moovBox.copyOfRange(tkhdEntry.second, tkhdEntry.third)
+        val mdiaEntry = trakChildren.firstOrNull { it.first == "mdia" } ?: continue
+        val mdiaHeader = headerSizeOf(moovBox, mdiaEntry.second)
+        val mdiaChildren = childrenOf(moovBox, mdiaEntry.second + mdiaHeader, mdiaEntry.third)
+        val mdhdEntry = mdiaChildren.firstOrNull { it.first == "mdhd" } ?: continue
+        val mdhd = moovBox.copyOfRange(mdhdEntry.second, mdhdEntry.third)
+        val mdhdVersion = mdhd[8].toInt()
+        val timescale = if (mdhdVersion == 1) mdhd.u32be(28) else mdhd.u32be(20)
+        if (timescale <= 0) continue
+        val hdlrEntry = mdiaChildren.firstOrNull { it.first == "hdlr" } ?: continue
+        val hdlr = moovBox.copyOfRange(hdlrEntry.second, hdlrEntry.third)
+        val hdlrContent = hdlrEntry.second + headerSizeOf(moovBox, hdlrEntry.second)
+        if (moovBox.copyOfRange(hdlrContent + 8, hdlrContent + 12).decodeToString() != "soun") continue
+        val minfEntry = mdiaChildren.firstOrNull { it.first == "minf" } ?: continue
+        val minfHeader = headerSizeOf(moovBox, minfEntry.second)
+        val minfChildren = childrenOf(moovBox, minfEntry.second + minfHeader, minfEntry.third)
+        val stblEntry = minfChildren.firstOrNull { it.first == "stbl" } ?: continue
+        val stblHeader = headerSizeOf(moovBox, stblEntry.second)
+        val stblChildren = childrenOf(moovBox, stblEntry.second + stblHeader, stblEntry.third)
+        val smhdEntry = minfChildren.firstOrNull { it.first == "smhd" }
+        val smhd = smhdEntry?.let { moovBox.copyOfRange(it.second, it.third) }
+        val dinfEntry = minfChildren.firstOrNull { it.first == "dinf" }
+        val dinf = dinfEntry?.let { moovBox.copyOfRange(it.second, it.third) }
+        val stsdEntry = stblChildren.firstOrNull { it.first == "stsd" } ?: continue
+        val stsd = moovBox.copyOfRange(stsdEntry.second, stsdEntry.third)
+        val stsdContent = stsdEntry.second + headerSizeOf(moovBox, stsdEntry.second)
+        if (moovBox.u32be(stsdContent + 4) != 1L) continue
+        val sttsEntry = stblChildren.firstOrNull { it.first == "stts" } ?: continue
+        val sttsContent = sttsEntry.second + headerSizeOf(moovBox, sttsEntry.second)
+        val sttsCount = moovBox.u32be(sttsContent + 4).toInt()
+        val stts = mutableListOf<Pair<Long, Long>>()
+        var p = sttsContent + 8
+        for (i in 0 until sttsCount) {
+            stts.add(Pair(moovBox.u32be(p), moovBox.u32be(p + 4)))
+            p += 8
+        }
+        val stszEntry = stblChildren.firstOrNull { it.first == "stsz" } ?: continue
+        val stszContent = stszEntry.second + headerSizeOf(moovBox, stszEntry.second)
+        val uniformSize = moovBox.u32be(stszContent + 4)
+        val sampleCount = moovBox.u32be(stszContent + 8).toInt()
+        val sampleSizes = if (uniformSize != 0L) {
+            IntArray(sampleCount) { uniformSize.toInt() }
+        } else {
+            val arr = IntArray(sampleCount)
+            var q = stszContent + 12
+            for (i in 0 until sampleCount) {
+                arr[i] = moovBox.u32be(q).toInt()
+                q += 4
+            }
+            arr
+        }
+        val stscEntry = stblChildren.firstOrNull { it.first == "stsc" } ?: continue
+        val stscContent = stscEntry.second + headerSizeOf(moovBox, stscEntry.second)
+        val stscCount = moovBox.u32be(stscContent + 4).toInt()
+        val stsc = mutableListOf<Triple<Long, Long, Long>>()
+        var r = stscContent + 8
+        for (i in 0 until stscCount) {
+            stsc.add(Triple(moovBox.u32be(r), moovBox.u32be(r + 4), moovBox.u32be(r + 8)))
+            r += 12
+        }
+        val stcoEntry = stblChildren.firstOrNull { it.first == "stco" }
+        val co64Entry = stblChildren.firstOrNull { it.first == "co64" }
+        val chunkOffsets = when {
+            stcoEntry != null -> {
+                val c = stcoEntry.second + headerSizeOf(moovBox, stcoEntry.second)
+                val n = moovBox.u32be(c + 4).toInt()
+                LongArray(n) { moovBox.u32be(c + 8 + it * 4) }
+            }
+            co64Entry != null -> {
+                val c = co64Entry.second + headerSizeOf(moovBox, co64Entry.second)
+                val n = moovBox.u32be(c + 4).toInt()
+                LongArray(n) { moovBox.u64be(c + 8 + it * 8) }
+            }
+            else -> continue
+        }
+        return ParsedMoov(
+            mvhd = mvhd,
+            movieTimescale = movieTimescale,
+            track = ParsedAudioTrack(
+                timescale = timescale,
+                tkhd = tkhd,
+                mdhd = mdhd,
+                hdlr = hdlr,
+                smhd = smhd,
+                dinf = dinf,
+                stsd = stsd,
+                stts = stts,
+                sampleSizes = sampleSizes,
+                stsc = stsc,
+                chunkOffsets = chunkOffsets,
+            ),
+        )
+    }
+    return null
+}
+
+// Chunk (1-based) and first sample index of that chunk for sample [s].
+private fun chunkForSample(stsc: List<Triple<Long, Long, Long>>, s: Long): Pair<Long, Long> {
+    var firstSample: Long = 0
+    for (j in stsc.indices) {
+        val (firstChunk, spc, _) = stsc[j]
+        if (spc <= 0) return Pair(-1, -1)
+        if (j == stsc.size - 1) {
+            val chunk = firstChunk + (s - firstSample) / spc
+            return Pair(chunk, firstSample + (chunk - firstChunk) * spc)
+        }
+        val nextFirst = stsc[j + 1].first
+        val covered = (nextFirst - firstChunk) * spc
+        if (s < firstSample + covered) {
+            val chunk = firstChunk + (s - firstSample) / spc
+            return Pair(chunk, firstSample + (chunk - firstChunk) * spc)
+        }
+        firstSample += covered
+    }
+    return Pair(-1, -1)
+}
+
+private fun buildMoov(
+    mvhdOrig: ByteArray,
+    tkhdOrig: ByteArray,
+    mdhdOrig: ByteArray,
+    hdlr: ByteArray,
+    smhd: ByteArray?,
+    dinf: ByteArray?,
+    stsd: ByteArray,
+    sttsEntries: List<Pair<Long, Long>>,
+    sampleSizes: List<Int>,
+    movieTimescale: Long,
+    windowMs: Long,
+    selectedDeltaSum: Long,
+    stcoValue: Long,
+): ByteArray {
+    val movieDuration = windowMs * movieTimescale / 1000
+    val mvhdPatched = if (mvhdOrig[8].toInt() == 1) {
+        patchU64(mvhdOrig, 32, movieDuration)
+    } else {
+        patchU32(mvhdOrig, 24, movieDuration)
+    }
+    val tkhdPatched = if (tkhdOrig[8].toInt() == 1) {
+        patchU64(tkhdOrig, 36, movieDuration)
+    } else {
+        patchU32(tkhdOrig, 28, movieDuration)
+    }
+    val mdhdPatched = if (mdhdOrig[8].toInt() == 1) {
+        patchU64(mdhdOrig, 32, selectedDeltaSum)
+    } else {
+        patchU32(mdhdOrig, 24, selectedDeltaSum)
+    }
+    val sttsPayload = concatBytes(
+        listOf(int32be(sttsEntries.size.toLong())) +
+            sttsEntries.map { (c, d) -> int32be(c) + int32be(d) },
+    )
+    val stszPayload = concatBytes(
+        listOf(int32be(0), int32be(sampleSizes.size.toLong())) +
+            sampleSizes.map { int32be(it.toLong()) },
+    )
+    val stscPayload = concatBytes(
+        listOf(int32be(1), int32be(1), int32be(sampleSizes.size.toLong()), int32be(1)),
+    )
+    val stcoPayload = concatBytes(listOf(int32be(1), int32be(stcoValue)))
+    val smhdBox = smhd ?: fullBox("smhd", byteArrayOf(0, 0, 0, 0))
+    val dinfBox = dinf ?: fullBox(
+        "dinf",
+        fullBox("dref", concatBytes(listOf(int32be(1), box("url ", byteArrayOf(0, 0, 0, 1))))),
+    )
+    val stbl = box(
+        "stbl",
+        concatBytes(
+            listOf(
+                stsd,
+                fullBox("stts", sttsPayload),
+                fullBox("stsz", stszPayload),
+                fullBox("stsc", stscPayload),
+                fullBox("stco", stcoPayload),
+            ),
+        ),
+    )
+    val minf = box("minf", concatBytes(listOf(smhdBox, dinfBox, stbl)))
+    val mdia = box("mdia", concatBytes(listOf(mdhdPatched, hdlr, minf)))
+    val trak = box("trak", concatBytes(listOf(tkhdPatched, mdia)))
+    return box("moov", concatBytes(listOf(mvhdPatched, trak)))
+}
+
+// Builds a local mp4 holding only the probe window's audio samples, or null.
+private suspend fun extractWindowMp4(
+    sourceUrl: String,
+    headers: Map<String, String>,
+    windowStartMs: Long,
+    windowMs: Long,
+): String? {
+    val (ftypBox, moovBox) = fetchMoovAndFtyp(sourceUrl, headers)
+    if (moovBox == null) return null
+    val parsed = parseAudioTrack(moovBox) ?: return null
+    val track = parsed.track
+    val wStart = windowStartMs * track.timescale / 1000
+    val wEnd = (windowStartMs + windowMs) * track.timescale / 1000
+    val selected = mutableListOf<Int>()
+    val selectedDeltas = mutableListOf<Long>()
+    var t = 0L
+    var idx = 0L
+    for ((count, delta) in track.stts) {
+        for (k in 0 until count) {
+            val s = t
+            val e = t + delta
+            if (e > wStart && s < wEnd) {
+                selected.add(idx.toInt())
+                selectedDeltas.add(delta)
+            }
+            t = e
+            idx++
+        }
+    }
+    if (selected.isEmpty()) return null
+    val ranges = mutableListOf<Pair<Long, Long>>()
+    var totalBytes = 0L
+    for (s in selected) {
+        val (chunk, firstInChunk) = chunkForSample(track.stsc, s.toLong())
+        if (chunk < 1 || chunk > track.chunkOffsets.size) return null
+        var off = track.chunkOffsets[(chunk - 1).toInt()]
+        for (i in firstInChunk until s.toLong()) off += track.sampleSizes[i.toInt()]
+        val size = track.sampleSizes[s].toLong()
+        totalBytes += size
+        if (totalBytes > MAX_WINDOW_BYTES) return null
+        val start = off
+        val end = off + size
+        val last = ranges.lastOrNull()
+        if (last != null && last.second == start) {
+            ranges[ranges.size - 1] = Pair(last.first, end)
+        } else {
+            ranges.add(Pair(start, end))
+        }
+    }
+    if (ranges.size > MAX_WINDOW_RANGES) return null
+    val sampleData = ByteArray(totalBytes.toInt())
+    var pos = 0
+    for ((start, end) in ranges) {
+        val bytes = fetchRange(sourceUrl, headers, start, end - 1) ?: return null
+        bytes.copyInto(sampleData, pos)
+        pos += bytes.size
+    }
+    if (pos != sampleData.size) return null
+    val sttsEntries = mutableListOf<Pair<Long, Long>>()
+    for (d in selectedDeltas) {
+        val last = sttsEntries.lastOrNull()
+        if (last != null && last.second == d) {
+            sttsEntries[sttsEntries.size - 1] = Pair(last.first + 1, d)
+        } else {
+            sttsEntries.add(Pair(1, d))
+        }
+    }
+    val sampleSizes = selected.map { track.sampleSizes[it] }
+    val selectedDeltaSum = selectedDeltas.sum()
+    val ftypBytes = ftypBox ?: box(
+        "ftyp",
+        concatBytes(
+            listOf(
+                "isom".encodeToByteArray(),
+                int32be(0),
+                "isom".encodeToByteArray(),
+                "iso2".encodeToByteArray(),
+            ),
+        ),
+    )
+    val moovPass1 = buildMoov(
+        mvhdOrig = parsed.mvhd,
+        tkhdOrig = track.tkhd,
+        mdhdOrig = track.mdhd,
+        hdlr = track.hdlr,
+        smhd = track.smhd,
+        dinf = track.dinf,
+        stsd = track.stsd,
+        sttsEntries = sttsEntries,
+        sampleSizes = sampleSizes,
+        movieTimescale = parsed.movieTimescale,
+        windowMs = windowMs,
+        selectedDeltaSum = selectedDeltaSum,
+        stcoValue = 0,
+    )
+    val stcoValue = ftypBytes.size + moovPass1.size + 8
+    val moovFinal = buildMoov(
+        mvhdOrig = parsed.mvhd,
+        tkhdOrig = track.tkhd,
+        mdhdOrig = track.mdhd,
+        hdlr = track.hdlr,
+        smhd = track.smhd,
+        dinf = track.dinf,
+        stsd = track.stsd,
+        sttsEntries = sttsEntries,
+        sampleSizes = sampleSizes,
+        movieTimescale = parsed.movieTimescale,
+        windowMs = windowMs,
+        selectedDeltaSum = selectedDeltaSum,
+        stcoValue = stcoValue.toLong(),
+    )
+    val fileBytes = concatBytes(listOf(ftypBytes, moovFinal, box("mdat", sampleData)))
+    val dir = NSTemporaryDirectory() + "probe-audio-" + NSUUID().UUIDString + "/"
+    if (!NSFileManager.defaultManager.createDirectoryAtPath(dir, withIntermediateDirectories = true, attributes = null, error = null)) return null
+    val path = dir + "window.mp4"
+    if (!fileBytes.writeToSegmentFile(path)) return null
+    return path
+}
+
+
 private suspend fun readRemoteFileIntoBins(
     sourceUrl: String,
     headers: Map<String, String>,
@@ -118,23 +614,32 @@ private suspend fun readRemoteFileIntoBins(
     sumSq: DoubleArray,
     counts: IntArray,
 ): Boolean {
-    val nsUrl = NSURL(string = sourceUrl) ?: return false
-    val options: Map<Any?, Any?> = mapOf(AV_URL_ASSET_HTTP_HEADER_FIELDS_KEY to headers)
-    val asset = AVURLAsset(uRL = nsUrl, options = options)
-    val timeRange = CMTimeRangeMake(
-        CMTimeMakeWithSeconds(windowStartMs / 1000.0, 1000),
-        CMTimeMakeWithSeconds(windowMs / 1000.0, 1000),
-    )
-    return readAssetBins(
-        asset = asset,
-        timeRange = timeRange,
-        absolutePts = true,
-        baseMs = 0L,
-        windowStartMs = windowStartMs,
-        binCount = binCount,
-        sumSq = sumSq,
-        counts = counts,
-    )
+    val windowPath = extractWindowMp4(sourceUrl, headers, windowStartMs, windowMs)
+    if (windowPath == null) {
+        InAppLogger.warn("Player/ProbeAudioReader", "window extract failed")
+        return false
+    }
+    val windowDir = windowPath.substringBeforeLast("/") + "/"
+    try {
+        val nsUrl = NSURL(string = "file://$windowPath") ?: return false
+        val asset = AVURLAsset(uRL = nsUrl, options = null)
+        val ok = readAssetBins(
+            asset = asset,
+            timeRange = null,
+            absolutePts = false,
+            baseMs = windowStartMs,
+            windowStartMs = windowStartMs,
+            binCount = binCount,
+            sumSq = sumSq,
+            counts = counts,
+        )
+        if (!ok) {
+            InAppLogger.warn("Player/ProbeAudioReader", "window decode failed")
+        }
+        return ok
+    } finally {
+        NSFileManager.defaultManager.removeItemAtPath(windowDir, error = null)
+    }
 }
 
 private suspend fun readHlsIntoBins(
@@ -194,7 +699,10 @@ private suspend fun readAssetBins(
     sumSq: DoubleArray,
     counts: IntArray,
 ): Boolean {
-    if (!asset.awaitTracks()) return false
+    if (!asset.awaitTracks()) {
+        InAppLogger.debug("Player/ProbeAudioReader", "readAssetBins failed: awaitTracks")
+        return false
+    }
     val outputSettings: Map<Any?, Any?> = mapOf(
         AV_FORMAT_ID_KEY to NSNumber(unsignedInt = LPCM_FORMAT_ID),
         AV_SAMPLE_RATE_KEY to PROBE_SAMPLE_RATE,
@@ -213,18 +721,31 @@ private suspend fun readAssetBins(
         .orEmpty()
         .filterIsInstance<AVAssetTrack>()
         .filter { (it.performSelector(mediaTypeSel) as? String) == AVMediaTypeAudio }
-    if (audioTracks.isEmpty()) return false
+    if (audioTracks.isEmpty()) {
+        InAppLogger.debug("Player/ProbeAudioReader", "readAssetBins failed: no audio tracks")
+        return false
+    }
     val output = AVAssetReaderAudioMixOutput(audioTracks, outputSettings)
     val reader = memScoped {
         val error = alloc<ObjCObjectVar<platform.Foundation.NSError?>>()
         AVAssetReader(asset, error.ptr)
-    } ?: return false
-    if (!reader.canAddOutput(output)) return false
+    }
+    if (reader == null) {
+        InAppLogger.debug("Player/ProbeAudioReader", "readAssetBins failed: reader null")
+        return false
+    }
+    if (!reader.canAddOutput(output)) {
+        InAppLogger.debug("Player/ProbeAudioReader", "readAssetBins failed: canAddOutput")
+        return false
+    }
     reader.addOutput(output)
     if (timeRange != null) {
         reader.timeRange = timeRange
     }
-    if (!reader.startReading()) return false
+    if (!reader.startReading()) {
+        InAppLogger.debug("Player/ProbeAudioReader", "readAssetBins failed: startReading")
+        return false
+    }
     var firstPtsSeconds: Double? = null
     var anySample = false
     while (reader.status == AVAssetReaderStatusReading) {
@@ -265,6 +786,9 @@ private suspend fun readAssetBins(
             }
         }
         anySample = true
+    }
+    if (!anySample) {
+        InAppLogger.debug("Player/ProbeAudioReader", "readAssetBins failed: no samples")
     }
     return anySample
 }
