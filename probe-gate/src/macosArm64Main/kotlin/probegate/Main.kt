@@ -164,19 +164,16 @@ private suspend fun runStageDiagnostics(url: String, windowStartMs: Long, window
         println("DIAG outputInitFailed ")
         return
     }
-    var readerError: String? = null
     val reader = try {
         memScoped {
             val err = alloc<ObjCObjectVar<NSError?>>()
-            val r = AVAssetReader(asset, err.ptr)
-            readerError = err.value?.description
-            r
+            AVAssetReader(asset, err.ptr)
         }
     } catch (e: Exception) {
         println("DIAG readerInitFailed simple=${e::class.simpleName} msg=${e.message}")
         return
     }
-    println("DIAG readerNull=${reader == null} readerError=$readerError")
+    println("DIAG readerNull=${reader == null}")
     if (reader == null) return
     val canAdd = reader.canAddOutput(output)
     println("DIAG canAddOutput=$canAdd")
