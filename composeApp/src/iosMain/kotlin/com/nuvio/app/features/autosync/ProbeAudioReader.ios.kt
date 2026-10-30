@@ -126,7 +126,7 @@ private data class HlsSegment(
 
 private const val MAX_MOOV_BYTES = 16 * 1024 * 1024L
 private const val MAX_WINDOW_BYTES = 64 * 1024 * 1024L
-private const val MAX_WINDOW_RANGES = 64
+private const val MAX_WINDOW_RANGES = 4096
 
 private fun ByteArray.u32be(offset: Int): Long {
     return ((this[offset].toLong() and 0xFF) shl 24) or
@@ -580,6 +580,7 @@ private suspend fun extractWindowMp4(
         InAppLogger.debug("Player/ProbeAudioReader", "extract: ranges cap ranges=${ranges.size}")
         return null
     }
+    InAppLogger.debug("Player/ProbeAudioReader", "extract: ranges=${ranges.size} bytes=${totalBytes}")
     val sampleData = ByteArray(totalBytes.toInt())
     var pos = 0
     for ((start, end) in ranges) {
