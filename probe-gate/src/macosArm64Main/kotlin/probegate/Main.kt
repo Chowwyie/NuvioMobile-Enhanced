@@ -26,6 +26,20 @@ import platform.Foundation.NSError
 import platform.Foundation.NSNumber
 import platform.Foundation.NSSelectorFromString
 import platform.Foundation.NSURL
+import io.ktor.client.HttpClient
+import io.ktor.client.call.body
+import io.ktor.client.engine.darwin.Darwin
+import io.ktor.client.request.get
+import io.ktor.http.isSuccess
+import kotlinx.cinterop.addressOf
+import kotlinx.cinterop.convert
+import kotlinx.cinterop.usePinned
+import platform.Foundation.NSFileManager
+import platform.Foundation.NSTemporaryDirectory
+import platform.Foundation.NSUUID
+import platform.posix.fclose
+import platform.posix.fopen
+import platform.posix.fwrite
 import kotlin.coroutines.resume
 import kotlin.system.exitProcess
 
@@ -34,6 +48,7 @@ private const val STREAM_URL = "https://archive.org/download/BigBuckBunny_328/Bi
 private const val HLS_URL = "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8"
 private const val WINDOW_START_MS = 180_000L
 private const val WINDOW_MS = 60_000L
+private const val AV_URL_ASSET_HTTP_HEADER_FIELDS_KEY = "AVURLAssetHTTPHeaderFieldsKey"
 
 fun main() = runBlocking {
     println("GATE direct-file start url=$STREAM_URL window=$WINDOW_START_MS..${WINDOW_START_MS + WINDOW_MS}")
@@ -49,6 +64,25 @@ fun main() = runBlocking {
             runStageDiagnostics(STREAM_URL, WINDOW_START_MS, WINDOW_MS)
         } catch (e: Exception) {
             println("GATE diagnostics threw simple=${e::class.simpleName} msg=${e.message}")
+        }
+        println("GATE local-file test: downloading stream")
+        val localDir = NSTemporaryDirectory() + "probe-gate-local-" + NSUUID().UUIDString + "/"
+        if (!NSFileManager.defaultManager.createDirectoryAtPath(localDir, withIntermediateDirectories = true, attributes = null, error = null)) {
+            println("GATE local temp dir failed")
+        } else {
+            val localPath = localDir + "probe.mp4"
+            val bytes = downloadBytes(STREAM_URL)
+            if (bytes == null || !bytes.writeToLocalFile(localPath)) {
+                println("GATE local download/write failed")
+            } else {
+                println("GATE local-file diagnostics url=file://$localPath")
+                try {
+                    runStageDiagnostics("file://$localPath", WINDOW_START_MS, WINDOW_MS)
+                } catch (e: Exception) {
+                    println("GATE local diagnostics threw simple=${e::class.simpleName} msg=${e.message}")
+                }
+            }
+            NSFileManager.defaultManager.removeItemAtPath(localDir, error = null)
         }
         println("GATE RESULT: FAIL direct envelope null")
         exitProcess(1)
@@ -121,13 +155,35 @@ private fun cuesFromSpeech(speech: BooleanArray, windowStartMs: Long, shiftMs: L
 
 // Stage-by-stage rerun of the reader's AVFoundation steps, printing each one,
 // so a null envelope still names the failing stage instead of just failing.
+private val gateHttpClient by lazy { HttpClient(Darwin) }
+
+private suspend fun downloadBytes(url: String): ByteArray? = try {
+    val response = gateHttpClient.get(url)
+    if (!response.status.isSuccess()) null else response.body<ByteArray>()
+} catch (_: Exception) {
+    null
+}
+
+private fun ByteArray.writeToLocalFile(path: String): Boolean {
+    val file = fopen(path, "wb") ?: return false
+    return try {
+        if (isEmpty()) return true
+        usePinned { pinned ->
+            fwrite(pinned.addressOf(0), 1.convert(), size.convert(), file).toLong() == size.toLong()
+        }
+    } finally {
+        fclose(file)
+    }
+}
+
 private suspend fun runStageDiagnostics(url: String, windowStartMs: Long, windowMs: Long) {
     val nsUrl = NSURL(string = url)
     if (nsUrl == null) {
         println("DIAG nsUrl null")
         return
     }
-    val asset = AVURLAsset(uRL = nsUrl, options = null)
+    val options: Map<Any?, Any?> = mapOf(AV_URL_ASSET_HTTP_HEADER_FIELDS_KEY to emptyMap<String, String>())
+    val asset = AVURLAsset(uRL = nsUrl, options = options)
     val loaded = suspendCancellableCoroutine { cont ->
         asset.loadValuesAsynchronouslyForKeys(listOf("tracks")) {
             val ok = memScoped {
