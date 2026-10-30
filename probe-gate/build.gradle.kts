@@ -17,7 +17,7 @@ kotlin {
                 implementation("io.ktor:ktor-client-core:3.4.1")
             }
         }
-        val macosMain by getting {
+        val macosArm64Main by getting {
             dependencies {
                 implementation("io.ktor:ktor-client-darwin:3.4.1")
             }
