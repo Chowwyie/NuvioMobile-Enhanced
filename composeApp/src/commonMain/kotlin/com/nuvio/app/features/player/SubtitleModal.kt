@@ -50,6 +50,7 @@ import androidx.compose.ui.unit.dp
 import com.nuvio.app.core.ui.nuvio
 import com.nuvio.app.core.ui.withDuplicateSafeLazyKeys
 import nuvio.composeapp.generated.resources.Res
+import nuvio.composeapp.generated.resources.action_retry
 import nuvio.composeapp.generated.resources.addon_title
 import nuvio.composeapp.generated.resources.compose_player_built_in
 import nuvio.composeapp.generated.resources.compose_player_fetch_subtitles
@@ -75,6 +76,8 @@ fun SubtitleModal(
     subtitleDelayMs: Int,
     selectedAddonSubtitle: AddonSubtitle?,
     subtitleAutoSyncState: SubtitleAutoSyncUiState,
+    probeAutoSyncStatus: ProbeAutoSyncStatus,
+    onProbeAutoSyncRetry: () -> Unit,
     onBuiltInTrackSelected: (Int) -> Unit,
     onAddonSubtitleSelected: (AddonSubtitle) -> Unit,
     onFetchAddonSubtitles: () -> Unit,
@@ -319,6 +322,13 @@ fun SubtitleModal(
                         }
                     }
                 }
+                if (probeAutoSyncStatus != ProbeAutoSyncStatus.Idle && effectiveSelectedAddonSubtitle != null) {
+                    ProbeAutoSyncStatusRow(
+                        status = probeAutoSyncStatus,
+                        onRetry = onProbeAutoSyncRetry,
+                        modifier = Modifier.padding(top = 8.dp),
+                    )
+                }
             }
         }
     }
@@ -552,4 +562,52 @@ private suspend fun LazyListState.scrollItemIntoViewIfNeeded(targetIndex: Int) {
     if (targetIndex < 0) return
     if (layoutInfo.visibleItemsInfo.any { it.index == targetIndex }) return
     scrollToItem(targetIndex)
+}
+
+@Composable
+private fun ProbeAutoSyncStatusRow(
+    status: ProbeAutoSyncStatus,
+    onRetry: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val tokens = MaterialTheme.nuvio
+    val text = when (status) {
+        ProbeAutoSyncStatus.Idle -> return
+        ProbeAutoSyncStatus.Running -> "Auto-syncing…"
+        is ProbeAutoSyncStatus.Applied -> "Auto-sync applied (${formatProbeDelaySeconds(status.delayMs)})"
+        ProbeAutoSyncStatus.Failed -> "Auto-sync couldn't measure"
+    }
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 6.dp, vertical = 2.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = text,
+            color = tokens.colors.textMuted,
+            style = MaterialTheme.typography.bodySmall,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f, fill = false),
+        )
+        if (status == ProbeAutoSyncStatus.Failed) {
+            Text(
+                text = stringResource(Res.string.action_retry),
+                color = tokens.colors.accent,
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 1,
+                modifier = Modifier.clickable { onRetry() },
+            )
+        }
+    }
+}
+
+private fun formatProbeDelaySeconds(delayMs: Long): String {
+    val seconds = delayMs / 1000.0
+    val sign = if (seconds < 0) "-" else "+"
+    val absSeconds = if (seconds < 0) -seconds else seconds
+    val tenths = (absSeconds * 10 + 0.5).toInt()
+    return "$sign${tenths / 10}.${tenths % 10}s"
 }
