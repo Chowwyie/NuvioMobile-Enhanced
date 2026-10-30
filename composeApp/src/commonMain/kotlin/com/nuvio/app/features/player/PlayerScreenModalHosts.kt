@@ -156,7 +156,7 @@ internal fun PlayerScreenModalHosts(
         selectedAddonSubtitle = selectedAddonSubtitle,
         subtitleAutoSyncState = subtitleAutoSyncState,
         probeAutoSyncStatus = probeAutoSyncStatus,
-        onProbeAutoSyncRetry = { requestProbeAutoSyncRetry() },
+        onProbeAutoSyncRetry = onProbeAutoSyncRetry,
         onBuiltInTrackSelected = onBuiltInSubtitleTrackSelected,
         onAddonSubtitleSelected = onAddonSubtitleSelected,
         onFetchAddonSubtitles = onFetchAddonSubtitles,
