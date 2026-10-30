@@ -1,3 +1,5 @@
+@file:OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
+
 package probegate
 
 import com.nuvio.app.features.autosync.ProbeAutoSyncAligner
