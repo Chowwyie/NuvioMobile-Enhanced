@@ -153,6 +153,8 @@ internal fun PlayerScreenModalHosts(
         subtitleDelayMs = subtitleDelayMs,
         selectedAddonSubtitle = selectedAddonSubtitle,
         subtitleAutoSyncState = subtitleAutoSyncState,
+        probeAutoSyncStatus = probeAutoSyncStatus,
+        onProbeAutoSyncRetry = { requestProbeAutoSyncRetry() },
         onBuiltInTrackSelected = onBuiltInSubtitleTrackSelected,
         onAddonSubtitleSelected = onAddonSubtitleSelected,
         onFetchAddonSubtitles = onFetchAddonSubtitles,
