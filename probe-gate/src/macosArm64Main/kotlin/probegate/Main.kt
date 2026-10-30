@@ -48,7 +48,7 @@ fun main() = runBlocking {
         try {
             runStageDiagnostics(STREAM_URL, WINDOW_START_MS, WINDOW_MS)
         } catch (e: Exception) {
-            println("GATE diagnostics threw ")
+            println("GATE diagnostics threw simple=${e::class.simpleName} msg=${e.message}")
         }
         println("GATE RESULT: FAIL direct envelope null")
         exitProcess(1)
@@ -164,11 +164,19 @@ private suspend fun runStageDiagnostics(url: String, windowStartMs: Long, window
         println("DIAG outputInitFailed ")
         return
     }
-    val reader = memScoped {
-        val err = alloc<ObjCObjectVar<NSError?>>()
-        AVAssetReader(asset, err.ptr)
+    var readerError: String? = null
+    val reader = try {
+        memScoped {
+            val err = alloc<ObjCObjectVar<NSError?>>()
+            val r = AVAssetReader(asset, err.ptr)
+            readerError = err.value?.description
+            r
+        }
+    } catch (e: Exception) {
+        println("DIAG readerInitFailed simple=${e::class.simpleName} msg=${e.message}")
+        return
     }
-    println("DIAG readerNull=${reader == null}")
+    println("DIAG readerNull=${reader == null} readerError=$readerError")
     if (reader == null) return
     val canAdd = reader.canAddOutput(output)
     println("DIAG canAddOutput=$canAdd")
