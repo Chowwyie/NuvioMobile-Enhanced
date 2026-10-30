@@ -1,0 +1,56 @@
+name: Probe Gate
+
+# Small, fast test job for the subtitle probe's iOS audio reader. It runs the
+# REAL reader code (copied fresh from composeApp at run time) natively on a
+# Mac runner against a public stream. It is workflow_dispatch ONLY: pushing
+# this file or the gate branch never triggers a full app build, and this job
+# never builds the app IPA.
+on:
+  workflow_dispatch:
+
+jobs:
+  gate:
+    runs-on: xcode-27
+    timeout-minutes: 60
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
+      GRADLE_OPTS: -Dfile.encoding=UTF-8
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Cache Kotlin Native
+        uses: actions/cache@v5
+        with:
+          path: ~/.konan
+          key: konan-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('gradle/libs.versions.toml') }}
+          restore-keys: |
+            konan-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Copy current probe sources into gate
+        run: |
+          set -e
+          mkdir -p probe-gate/src/commonMain/kotlin/com/nuvio/app/features/autosync
+          mkdir -p probe-gate/src/macosMain/kotlin/com/nuvio/app/features/autosync
+          cp composeApp/src/commonMain/kotlin/com/nuvio/app/features/autosync/ProbeAutoSyncAligner.kt probe-gate/src/commonMain/kotlin/com/nuvio/app/features/autosync/
+          cp composeApp/src/commonMain/kotlin/com/nuvio/app/features/autosync/ProbeAudioReader.kt probe-gate/src/commonMain/kotlin/com/nuvio/app/features/autosync/
+          cp composeApp/src/iosMain/kotlin/com/nuvio/app/features/autosync/ProbeAudioReader.ios.kt probe-gate/src/macosMain/kotlin/com/nuvio/app/features/autosync/ProbeAudioReader.macos.kt
+          ls probe-gate/src/commonMain/kotlin/com/nuvio/app/features/autosync/ probe-gate/src/macosMain/kotlin/com/nuvio/app/features/autosync/
+
+      - name: Build gate binary
+        run: |
+          cd probe-gate
+          chmod +x gradlew
+          ./gradlew linkReleaseExecutableMacosArm64 --no-daemon
+
+      - name: Run gate
+        run: |
+          ./probe-gate/build/bin/macosArm64/releaseExecutable/probe-gate.kexe
