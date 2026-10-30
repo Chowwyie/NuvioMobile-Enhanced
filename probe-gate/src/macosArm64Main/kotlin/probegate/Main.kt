@@ -45,7 +45,11 @@ fun main() = runBlocking {
     }
     if (env == null) {
         println("GATE envelope NULL, running stage diagnostics")
-        runStageDiagnostics(STREAM_URL, WINDOW_START_MS, WINDOW_MS)
+        try {
+            runStageDiagnostics(STREAM_URL, WINDOW_START_MS, WINDOW_MS)
+        } catch (e: Exception) {
+            println("GATE diagnostics threw ")
+        }
         println("GATE RESULT: FAIL direct envelope null")
         exitProcess(1)
     }
@@ -154,7 +158,12 @@ private suspend fun runStageDiagnostics(url: String, windowStartMs: Long, window
         "AVLinearPCMBitDepthKey" to 16,
         "AVLinearPCMIsFloatKey" to false
     )
-    val output = AVAssetReaderAudioMixOutput(audio, settings)
+    val output = try {
+        AVAssetReaderAudioMixOutput(audio, settings)
+    } catch (e: Exception) {
+        println("DIAG outputInitFailed ")
+        return
+    }
     val reader = memScoped {
         val err = alloc<ObjCObjectVar<NSError?>>()
         AVAssetReader(asset, err.ptr)
