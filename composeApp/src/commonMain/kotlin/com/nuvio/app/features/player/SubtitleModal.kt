@@ -604,7 +604,7 @@ private fun ProbeAutoSyncStatusRow(
     }
 }
 
-private fun formatProbeDelaySeconds(delayMs: Long): String {
+private fun formatProbeDelaySeconds(delayMs: Int): String {
     val seconds = delayMs / 1000.0
     val sign = if (seconds < 0) "-" else "+"
     val absSeconds = if (seconds < 0) -seconds else seconds

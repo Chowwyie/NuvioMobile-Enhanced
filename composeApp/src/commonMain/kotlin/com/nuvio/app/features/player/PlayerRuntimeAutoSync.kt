@@ -17,7 +17,7 @@ import kotlinx.coroutines.launch
 sealed interface ProbeAutoSyncStatus {
     data object Idle : ProbeAutoSyncStatus
     data object Running : ProbeAutoSyncStatus
-    data class Applied(val delayMs: Long) : ProbeAutoSyncStatus
+    data class Applied(val delayMs: Int) : ProbeAutoSyncStatus
     data object Failed : ProbeAutoSyncStatus
 }
 
