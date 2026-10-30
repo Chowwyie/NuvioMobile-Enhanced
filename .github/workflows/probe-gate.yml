@@ -39,11 +39,11 @@ jobs:
         run: |
           set -e
           mkdir -p probe-gate/src/commonMain/kotlin/com/nuvio/app/features/autosync
-          mkdir -p probe-gate/src/macosMain/kotlin/com/nuvio/app/features/autosync
+          mkdir -p probe-gate/src/macosArm64Main/kotlin/com/nuvio/app/features/autosync
           cp composeApp/src/commonMain/kotlin/com/nuvio/app/features/autosync/ProbeAutoSyncAligner.kt probe-gate/src/commonMain/kotlin/com/nuvio/app/features/autosync/
           cp composeApp/src/commonMain/kotlin/com/nuvio/app/features/autosync/ProbeAudioReader.kt probe-gate/src/commonMain/kotlin/com/nuvio/app/features/autosync/
-          cp composeApp/src/iosMain/kotlin/com/nuvio/app/features/autosync/ProbeAudioReader.ios.kt probe-gate/src/macosMain/kotlin/com/nuvio/app/features/autosync/ProbeAudioReader.macos.kt
-          ls probe-gate/src/commonMain/kotlin/com/nuvio/app/features/autosync/ probe-gate/src/macosMain/kotlin/com/nuvio/app/features/autosync/
+          cp composeApp/src/iosMain/kotlin/com/nuvio/app/features/autosync/ProbeAudioReader.ios.kt probe-gate/src/macosArm64Main/kotlin/com/nuvio/app/features/autosync/ProbeAudioReader.macos.kt
+          ls probe-gate/src/commonMain/kotlin/com/nuvio/app/features/autosync/ probe-gate/src/macosArm64Main/kotlin/com/nuvio/app/features/autosync/
 
       - name: Build gate binary
         run: |
