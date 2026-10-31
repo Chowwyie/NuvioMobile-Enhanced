@@ -51,6 +51,23 @@ jobs:
           chmod +x gradlew
           ./gradlew linkReleaseExecutableMacosArm64 --no-daemon
 
+      - name: Download redirect test file
+        run: |
+          set -e
+          curl -L -o "$RUNNER_TEMP/bbb.mp4" "https://archive.org/download/BigBuckBunny_328/BigBuckBunny_512kb.mp4"
+          test -s "$RUNNER_TEMP/bbb.mp4"
+
+      - name: Start local redirect server
+        run: |
+          set -e
+          nohup python3 probe-gate/redirect_server.py "$RUNNER_TEMP" 8931 > "$RUNNER_TEMP/redirect-server.log" 2>&1 &
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:8931/redirect" || true)
+            if [ "$code" = "307" ]; then echo "redirect server ready"; exit 0; fi
+            sleep 1
+          done
+          echo "redirect server did not become ready"; cat "$RUNNER_TEMP/redirect-server.log"; exit 1
+
       - name: Run gate
         run: |
           ./probe-gate/build/bin/macosArm64/releaseExecutable/probe-gate.kexe

@@ -119,7 +119,9 @@ fun main() = runBlocking {
     // Redirect test: the same file behind a 307. The probe client must follow
     // it (this is the device failure mechanism); the window content must match
     // the direct fetch exactly.
-    val redirectUrl = "https://httpbin.org/redirect-to?url=https%3A%2F%2Farchive.org%2Fdownload%2FBigBuckBunny_328%2FBigBuckBunny_512kb.mp4&status_code=307"
+    // Local redirect server started by the workflow: a single 307 hop to the
+    // same file the direct test fetches. No external test dependency.
+    val redirectUrl = "http://127.0.0.1:8931/redirect"
     val redirectEnv = try {
         readProbeAudioEnvelope(redirectUrl, emptyMap(), WINDOW_START_MS, WINDOW_MS)
     } catch (e: Exception) {
