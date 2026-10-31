@@ -90,4 +90,81 @@ object ProbeAutoSyncAligner {
         if (bestScore <= 0) return null
         return (bestLag * BIN_MS).toInt()
     }
+
+    // ---- Sparse-chunk probe ----
+    // Same measurement, fewer bytes: instead of one continuous 60s window,
+    // probe a few short chunks of speech spread over a wide span and
+    // correlate them against the full cue track. Cues cost nothing (the
+    // subtitle file is already fetched); only speech costs bytes, so the
+    // transfer cost is the chunks' bytes while the lag range comes from
+    // the span. Speech outside the chunks is unknown, never assumed silent.
+    const val SPARSE_CHUNK_MS = 5_000L
+    const val SPARSE_CHUNK_COUNT = 3
+    const val SPARSE_MIN_SEPARATION_MS = 30_000L
+    const val SPARSE_SEARCH_START_MS = 60_000L
+    const val SPARSE_SEARCH_END_MS = 300_000L
+    const val SPARSE_MIN_CUE_BINS_PER_CHUNK = 15
+
+    /**
+     * Chunk starts (ms) by cue density: 5s slices over the search span,
+     * greedy top slices with a minimum separation, densest first. Returns
+     * ascending starts, or fewer than [SPARSE_CHUNK_COUNT] when the cues
+     * cannot support that many (caller falls back to the continuous window).
+     */
+    fun pickSparseChunks(cues: List<SubtitleSyncCue>): List<Long> {
+        val spanBins = ((SPARSE_SEARCH_END_MS - SPARSE_SEARCH_START_MS) / BIN_MS).toInt()
+        if (spanBins <= 0) return emptyList()
+        val cueEnv = cueEnvelope(cues, SPARSE_SEARCH_START_MS, spanBins)
+        val chunkBins = (SPARSE_CHUNK_MS / BIN_MS).toInt()
+        val sepBins = (SPARSE_MIN_SEPARATION_MS / BIN_MS).toInt()
+        val scored = (0 until spanBins - chunkBins + 1 step chunkBins).map { start ->
+            start to (start until start + chunkBins).count { cueEnv[it] }
+        }.filter { it.second >= SPARSE_MIN_CUE_BINS_PER_CHUNK }
+            .sortedByDescending { it.second }
+        val picked = mutableListOf<Int>()
+        for ((start, _) in scored) {
+            if (picked.size >= SPARSE_CHUNK_COUNT) break
+            if (picked.all { it - start >= sepBins || start - it >= sepBins }) {
+                picked.add(start)
+            }
+        }
+        return picked.sorted().map { SPARSE_SEARCH_START_MS + it * BIN_MS }
+    }
+
+    /**
+     * Best constant delay from gapped speech: [known] marks bins where
+     * speech was measured; unknown bins contribute nothing, neither matches
+     * nor floor counts. Floors mirror [bestDelayMs] but over known bins.
+     */
+    fun bestDelayMsSparse(speech: BooleanArray, known: BooleanArray, cues: BooleanArray): Int? {
+        if (speech.size != cues.size || speech.size != known.size || speech.isEmpty()) return null
+        val knownCount = known.count { it }
+        if (knownCount == 0) return null
+        var speechBins = 0
+        for (i in speech.indices) if (known[i] && speech[i]) speechBins++
+        if (speechBins < knownCount * MIN_SPEECH_BINS_FRACTION) return null
+        if (cues.count { it } < MIN_CUE_BINS) return null
+        val maxLagBins = (MAX_LAG_MS / BIN_MS).toInt()
+        val lags = (0..maxLagBins).flatMap { lag ->
+            if (lag == 0) listOf(0) else listOf(lag, -lag)
+        }
+        var bestLag = 0
+        var bestScore = -1
+        for (lag in lags) {
+            var score = 0
+            for (i in speech.indices) {
+                if (!known[i]) continue
+                val cueIndex = i - lag
+                if (cueIndex in cues.indices && speech[i] && cues[cueIndex]) {
+                    score++
+                }
+            }
+            if (score > bestScore) {
+                bestScore = score
+                bestLag = lag
+            }
+        }
+        if (bestScore <= 0) return null
+        return (bestLag * BIN_MS).toInt()
+    }
 }
