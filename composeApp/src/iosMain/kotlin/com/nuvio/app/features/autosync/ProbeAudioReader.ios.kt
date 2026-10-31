@@ -2005,9 +2005,11 @@ private suspend fun readAssetBins(
     // the "tracks" key above.
     val tracksSel = NSSelectorFromString("tracks") ?: return false
     val mediaTypeSel = NSSelectorFromString("mediaType") ?: return false
-    val audioTracks = (asset.performSelector(tracksSel) as? List<*>)
-        .orEmpty()
-        .filterIsInstance<AVAssetTrack>()
+    val rawTracks = (asset.performSelector(tracksSel) as? List<*>).orEmpty()
+    val typedTracks = rawTracks.filterIsInstance<AVAssetTrack>()
+    val trackMediaTypes = typedTracks.map { (it.performSelector(mediaTypeSel) as? String) ?: "<null>" }
+    InAppLogger.debug("Player/ProbeAudioReader", "readAssetBins tracks raw=${rawTracks.size} typed=${typedTracks.size} mediaTypes=${trackMediaTypes}")
+    val audioTracks = typedTracks
         .filter { (it.performSelector(mediaTypeSel) as? String) == AVMediaTypeAudio }
     if (audioTracks.isEmpty()) {
         InAppLogger.debug("Player/ProbeAudioReader", "readAssetBins failed: no audio tracks")
