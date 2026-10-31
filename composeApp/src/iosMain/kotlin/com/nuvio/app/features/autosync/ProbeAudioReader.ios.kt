@@ -1007,15 +1007,21 @@ private class Ac3Header(
 private fun parseEac3Header(frame: ByteArray): Ac3Header? {
     if (frame.size < 8) return null
     if ((frame[0].toInt() and 0xFF) != 0x0B || (frame[1].toInt() and 0xFF) != 0x77) return null
+    // E-AC-3 bsi order (ATSC A/52 Annex E, Table E1.2) — NOT the AC-3 order:
+    // strmtyp, substreamid, frmsiz, fscod, numblkscod/fscod2, acmod, lfeon,
+    // bsid, dialnorm, compre, ... bsmod sits deep in the bsi (inside
+    // infomdate) and defaults to 0 when that block is absent.
     val r = BitReader(frame, 16)
-    r.skip(2 + 3 + 11)
+    val strmtyp = r.bits(2)
+    r.skip(3 + 11)
     val fscod = r.bits(2)
+    // numblkscod occupies 2 bits in every frame; when fscod == 3 the same
+    // bits are fscod2 and numblkscod is implicitly 3 (six blocks).
     val fscod2 = if (fscod == 3) r.bits(2) else -1
-    val bsid = r.bits(5)
-    val bsmod = r.bits(3)
+    if (fscod != 3) r.skip(2) // numblkscod
     val acmod = r.bits(3)
-    if (acmod == 2) r.skip(2)
     val lfeon = r.bits(1)
+    val bsid = r.bits(5)
     val rate = when {
         fscod == 0 -> 48000L
         fscod == 1 -> 44100L
@@ -1025,6 +1031,35 @@ private fun parseEac3Header(frame: ByteArray): Ac3Header? {
         fscod2 == 2 -> 16000L
         else -> return null
     }
+    r.skip(5) // dialnorm
+    val compre = r.bits(1)
+    if (compre == 1) r.skip(8)
+    if (acmod == 0) {
+        r.skip(5) // dialnorm2
+        val compr2e = r.bits(1)
+        if (compr2e == 1) r.skip(8)
+    }
+    if (strmtyp == 1) {
+        val chanmape = r.bits(1)
+        if (chanmape == 1) r.skip(16)
+    }
+    val mixmdate = r.bits(1)
+    // Mixing metadata is variable-length, so bsmod cannot be reached cheaply
+    // past it; fall back to the default (complete main service).
+    if (mixmdate == 1) return Ac3Header(rate, fscod, -1, bsid, 0, acmod, lfeon)
+    if (acmod < 2) {
+        val paninfoe = r.bits(1)
+        if (paninfoe == 1) r.skip(14)
+        if (acmod == 0) {
+            val paninfo2e = r.bits(1)
+            if (paninfo2e == 1) r.skip(14)
+        }
+    }
+    val frmmixcfginfoe = r.bits(1)
+    // Per-block mix-config fields are variable-length; same fallback.
+    if (frmmixcfginfoe == 1) return Ac3Header(rate, fscod, -1, bsid, 0, acmod, lfeon)
+    val infomdate = r.bits(1)
+    val bsmod = if (infomdate == 1) r.bits(3) else 0
     return Ac3Header(rate, fscod, -1, bsid, bsmod, acmod, lfeon)
 }
 
@@ -1247,7 +1282,7 @@ private fun dec3Box(h: Ac3Header, dataRateKbps: Int): ByteArray {
     val payload = packBits(
         listOf(
             Pair(dataRateKbps.coerceAtMost(8191), 13),
-            Pair(1, 3),
+            Pair(0, 3), // num_ind_sub is count minus one: 0 for one independent substream
             Pair(h.fscod, 2),
             Pair(h.bsid, 5),
             Pair(h.bsmod, 3),
