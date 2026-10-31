@@ -275,8 +275,6 @@ internal class PlayerScreenRuntime(
     var subtitleAutoSyncState by mutableStateOf(SubtitleAutoSyncUiState())
     /** Probe autosync status shown in the subtitle picker (idle = nothing shown). */
     var probeAutoSyncStatus by mutableStateOf<ProbeAutoSyncStatus>(ProbeAutoSyncStatus.Idle)
-    /** Key of the last probe autosync attempt (video + subtitle URL); probes run once per playback. */
-    var probeAutoSyncAttemptedKey: String? = null
     var showSubtitleSyncByEar by mutableStateOf(false)
     var subtitleSyncHeardPositionMs by mutableStateOf<Long?>(null)
     var subtitleSyncSawPositionMs by mutableStateOf<Long?>(null)

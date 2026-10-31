@@ -57,6 +57,7 @@ import nuvio.composeapp.generated.resources.compose_player_font_size
 import nuvio.composeapp.generated.resources.compose_player_font_size_value
 import nuvio.composeapp.generated.resources.compose_player_loading_lines
 import nuvio.composeapp.generated.resources.compose_player_no_subtitle_lines_found
+import nuvio.composeapp.generated.resources.action_retry
 import nuvio.composeapp.generated.resources.compose_player_outline
 import nuvio.composeapp.generated.resources.compose_player_outline_color
 import nuvio.composeapp.generated.resources.compose_player_shadow
@@ -79,6 +80,8 @@ fun SubtitleStylePanel(
     subtitleDelayMs: Int,
     selectedAddonSubtitle: AddonSubtitle?,
     subtitleAutoSyncState: SubtitleAutoSyncUiState,
+    probeAutoSyncStatus: ProbeAutoSyncStatus,
+    onProbeAutoSyncTrigger: () -> Unit,
     isCompact: Boolean,
     showHeader: Boolean = true,
     onStyleChanged: (SubtitleStyleState) -> Unit,
@@ -124,6 +127,11 @@ fun SubtitleStylePanel(
             SubtitleSyncByEarAction(
                 label = stringResource(Res.string.compose_player_sync_by_ear),
                 onClick = onSyncByEarClick,
+            )
+            ProbeAutoSyncRow(
+                status = probeAutoSyncStatus,
+                hasAddonSubtitle = selectedAddonSubtitle != null,
+                onTrigger = onProbeAutoSyncTrigger,
             )
         }
 
@@ -655,3 +663,28 @@ private val SubtitleOutlineColorSwatches = listOf(
     Color(0xFF00E5FF),
     Color(0xFFFF5C5C),
 )
+
+@Composable
+private fun ProbeAutoSyncRow(
+    status: ProbeAutoSyncStatus,
+    hasAddonSubtitle: Boolean,
+    onTrigger: () -> Unit,
+) {
+    val text = when (status) {
+        ProbeAutoSyncStatus.Idle -> "Auto-sync"
+        ProbeAutoSyncStatus.Running -> "Auto-syncing…"
+        is ProbeAutoSyncStatus.Applied -> "Auto-sync applied (${formatSubtitleDelay(status.delayMs)})"
+        ProbeAutoSyncStatus.Failed -> "Auto-sync couldn't measure"
+    }
+    val buttonLabel = if (status == ProbeAutoSyncStatus.Failed) {
+        stringResource(Res.string.action_retry)
+    } else {
+        "Sync"
+    }
+    SubtitleHelperText(text)
+    SubtitleTextAction(
+        label = buttonLabel,
+        onClick = onTrigger,
+        enabled = hasAddonSubtitle && status != ProbeAutoSyncStatus.Running,
+    )
+}

@@ -17,7 +17,7 @@ import kotlinx.coroutines.launch
 sealed interface ProbeAutoSyncStatus {
     data object Idle : ProbeAutoSyncStatus
     data object Running : ProbeAutoSyncStatus
-    data class Applied(val delayMs: Long) : ProbeAutoSyncStatus
+    data class Applied(val delayMs: Int) : ProbeAutoSyncStatus
     data object Failed : ProbeAutoSyncStatus
 }
 
@@ -86,9 +86,6 @@ internal fun PlayerScreenRuntime.BindAutoSyncRuntimeEffects() {
             )
         }
     }
-    LaunchedEffect(playerController, selectedAddonSubtitleId, addonSubtitles) {
-        runProbeAutoSyncIfNeeded()
-    }
 }
 
 /**
@@ -100,12 +97,10 @@ internal fun PlayerScreenRuntime.BindAutoSyncRuntimeEffects() {
  * measured against the subtitle cues and the resulting constant offset is
  * applied as a subtitle delay.
  */
-private suspend fun PlayerScreenRuntime.runProbeAutoSyncIfNeeded(force: Boolean = false) {
+private suspend fun PlayerScreenRuntime.runProbeAutoSyncIfNeeded() {
     val videoId = playbackSession.videoId
     probeAutoSyncStatus = ProbeAutoSyncStatus.Idle
-    if (force) {
-        InAppLogger.info("Player/ProbeAutoSync", "probe manual retry videoId=${videoId}")
-    }
+    InAppLogger.info("Player/ProbeAutoSync", "probe manual trigger videoId=${videoId}")
     val subtitle = selectedAddonSubtitle
     if (subtitle == null) {
         InAppLogger.debug("Player/ProbeAutoSync", "probe skipped: no addon subtitle videoId=${videoId}")
@@ -113,17 +108,6 @@ private suspend fun PlayerScreenRuntime.runProbeAutoSyncIfNeeded(force: Boolean 
     }
     if (activeSourceUrl.startsWith("file:")) {
         InAppLogger.debug("Player/ProbeAutoSync", "probe skipped: file source videoId=${videoId}")
-        return
-    }
-    val attemptKey = videoId + "|" + subtitle.url
-    if (!force && probeAutoSyncAttemptedKey == attemptKey) {
-        InAppLogger.debug("Player/ProbeAutoSync", "probe skipped: already attempted videoId=${videoId}")
-        return
-    }
-    probeAutoSyncAttemptedKey = attemptKey
-    val storedDelay = PlayerTrackPreferenceStorage.loadSubtitleDelayMs(videoId)
-    if (!force && storedDelay?.let { it != 0 } == true) {
-        InAppLogger.debug("Player/ProbeAutoSync", "probe skipped: stored delay ms=${storedDelay} videoId=${videoId}")
         return
     }
     probeAutoSyncStatus = ProbeAutoSyncStatus.Running
@@ -223,7 +207,7 @@ internal fun PlayerScreenRuntime.maybeAutoSyncPreferredSubtitleAtStart(
     return true
 }
 
-/** Manual probe retry from the subtitle picker: bypasses the once-per-playback and stored-delay gates. */
-internal fun PlayerScreenRuntime.requestProbeAutoSyncRetry() {
-    scope.launch { runProbeAutoSyncIfNeeded(force = true) }
+/** Manual probe trigger from the subtitle style section. */
+internal fun PlayerScreenRuntime.requestProbeAutoSync() {
+    scope.launch { runProbeAutoSyncIfNeeded() }
 }
