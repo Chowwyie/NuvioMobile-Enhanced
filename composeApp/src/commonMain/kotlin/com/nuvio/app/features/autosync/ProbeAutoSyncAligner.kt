@@ -99,7 +99,7 @@ object ProbeAutoSyncAligner {
     // transfer cost is the chunks' bytes while the lag range comes from
     // the span. Speech outside the chunks is unknown, never assumed silent.
     const val SPARSE_CHUNK_MS = 5_000L
-    const val SPARSE_CHUNK_COUNT = 3
+    const val SPARSE_CHUNK_COUNT = 5
     const val SPARSE_MIN_SEPARATION_MS = 30_000L
     const val SPARSE_SEARCH_START_MS = 60_000L
     const val SPARSE_SEARCH_END_MS = 300_000L
