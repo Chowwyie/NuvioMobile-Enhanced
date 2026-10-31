@@ -116,6 +116,27 @@ fun main() = runBlocking {
         println("GATE RESULT: FAIL shifted alignment")
         exitProcess(1)
     }
+    // Redirect test: the same file behind a 307. The probe client must follow
+    // it (this is the device failure mechanism); the window content must match
+    // the direct fetch exactly.
+    val redirectUrl = "https://httpbin.org/redirect-to?url=https%3A%2F%2Farchive.org%2Fdownload%2FBigBuckBunny_328%2FBigBuckBunny_512kb.mp4&status_code=307"
+    val redirectEnv = try {
+        readProbeAudioEnvelope(redirectUrl, emptyMap(), WINDOW_START_MS, WINDOW_MS)
+    } catch (e: Exception) {
+        println("GATE redirect threw ${e::class.simpleName}: ${e.message}")
+        null
+    }
+    if (redirectEnv == null) {
+        println("GATE RESULT: FAIL redirect envelope null")
+        exitProcess(1)
+    }
+    val redirectSpeech = ProbeAutoSyncAligner.speechEnvelope(redirectEnv.rms)
+    val redirectSpeechCount = redirectSpeech.count { it }
+    println("GATE redirect envelope bins=${redirectEnv.rms.size} speechBins=$redirectSpeechCount directSpeechBins=$speechCount")
+    if (redirectEnv.rms.size != rms.size || redirectSpeechCount != speechCount) {
+        println("GATE RESULT: FAIL redirect content mismatch")
+        exitProcess(1)
+    }
     val hlsEnv = try {
         readProbeAudioEnvelope(HLS_URL, emptyMap(), WINDOW_START_MS, WINDOW_MS)
     } catch (e: Exception) {
