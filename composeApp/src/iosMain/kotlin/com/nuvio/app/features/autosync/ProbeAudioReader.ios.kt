@@ -1174,7 +1174,7 @@ private fun synthTkhd(durationMs: Long): ByteArray {
             unityMatrix(), int32be(0), int32be(0),
         ),
     )
-    return fullBox("tkhd", payload)
+    return box("tkhd", concatBytes(listOf(byteArrayOf(0, 0, 0, 7), payload)))
 }
 
 private fun synthMdhd(timescale: Long, duration: Long): ByteArray {
