@@ -87,5 +87,15 @@ jobs:
           echo "redirect server did not become ready"; cat "$RUNNER_TEMP/redirect-server.log"; exit 1
 
       - name: Run gate
+        env:
+          PROBE_DUMP_DIR: ${{ runner.temp }}/probe-dump
         run: |
+          mkdir -p "$RUNNER_TEMP/probe-dump"
           ./probe-gate/build/bin/macosArm64/releaseExecutable/probe-gate.kexe
+      - name: Upload window dumps
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: probe-window-dumps
+          path: ${{ runner.temp }}/probe-dump
+          if-no-files-found: ignore
