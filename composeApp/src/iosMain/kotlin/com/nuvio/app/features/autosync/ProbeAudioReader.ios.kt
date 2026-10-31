@@ -804,14 +804,12 @@ private fun opusPacketSamples(packet: ByteArray): Int {
     val toc = packet[0].toInt() and 0xFF
     val config = toc shr 3
     val frameSamples = when (config) {
-        0, 4, 8, 12, 14 -> 480
-        1, 5, 9, 13, 15 -> 960
+        0, 4, 8, 12, 14, 18, 22, 26, 30 -> 480
+        1, 5, 9, 13, 15, 19, 23, 27, 31 -> 960
         2, 6, 10 -> 1920
         3, 7, 11 -> 2880
-        16 -> 120
-        17 -> 240
-        18 -> 480
-        19 -> 960
+        16, 20, 24, 28 -> 120
+        17, 21, 25, 29 -> 240
         else -> return -1
     }
     val code = toc and 0x03
