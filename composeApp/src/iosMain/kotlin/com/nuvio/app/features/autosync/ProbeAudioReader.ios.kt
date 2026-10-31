@@ -690,7 +690,7 @@ private fun int32le(value: Long): ByteArray =
         ((value shr 24) and 0xFF).toByte(),
     )
 
-private fun forEachEbmlChild(bytes: ByteArray, start: Int, end: Int, action: (Long, Int, Int) -> Unit, strictEnd: Boolean = false) {
+private fun forEachEbmlChild(bytes: ByteArray, start: Int, end: Int, strictEnd: Boolean = false, action: (Long, Int, Int) -> Unit) {
     var pos = start
     while (pos < end) {
         val h = parseEbmlHeader(bytes, pos) ?: return
