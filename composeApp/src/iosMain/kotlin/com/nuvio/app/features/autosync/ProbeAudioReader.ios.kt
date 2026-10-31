@@ -580,7 +580,7 @@ private fun buildMoov(
     )
     val stcoPayload = concatBytes(listOf(int32be(1), int32be(stcoValue)))
     val smhdBox = smhd ?: fullBox("smhd", byteArrayOf(0, 0, 0, 0))
-    val dinfBox = dinf ?: fullBox(
+    val dinfBox = dinf ?: box(
         "dinf",
         fullBox("dref", concatBytes(listOf(int32be(1), box("url ", byteArrayOf(0, 0, 0, 1))))),
     )
