@@ -3,7 +3,9 @@
 package probegate
 
 import com.nuvio.app.features.autosync.ProbeAutoSyncAligner
+import com.nuvio.app.features.autosync.ProbeAudioEnvelope
 import com.nuvio.app.features.autosync.readProbeAudioEnvelope
+import com.nuvio.app.core.logging.InAppLogger
 import com.nuvio.app.features.player.SubtitleSyncCue
 import kotlinx.cinterop.ObjCObjectVar
 import kotlinx.cinterop.alloc
@@ -49,6 +51,137 @@ private const val HLS_URL = "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8"
 private const val WINDOW_START_MS = 180_000L
 private const val WINDOW_MS = 60_000L
 private const val AV_URL_ASSET_HTTP_HEADER_FIELDS_KEY = "AVURLAssetHTTPHeaderFieldsKey"
+
+// Modeled device time for the 5s perf gate. The gate runner's network is
+// datacenter-fast, so wall time there proves nothing about a phone; the
+// model charges every fetched byte at a normal (not optimal) 25 Mbps plus
+// 250ms per request round, with 16-way parallelism where the reader fetches
+// in parallel. MKV tail fetches are sequential, so they pay per fetch.
+private const val MODEL_BYTES_PER_SEC = 3_125_000.0
+private const val MODEL_ROUND_MS = 250.0
+private const val MODEL_PARALLELISM = 16L
+
+private fun modeledMs(bytes: Long, requests: Long): Double {
+    val rounds = (requests + MODEL_PARALLELISM - 1) / MODEL_PARALLELISM
+    return bytes / MODEL_BYTES_PER_SEC * 1000.0 + rounds * MODEL_ROUND_MS
+}
+
+private fun latestMetricsSince(mark: Int, prefix: String): String? {
+    for (i in InAppLogger.lines.size - 1 downTo mark) {
+        val line = InAppLogger.lines[i]
+        if (line.contains(prefix)) return line
+    }
+    return null
+}
+
+private fun parseLongAfter(line: String, key: String): Long? {
+    val idx = line.indexOf(key)
+    if (idx < 0) return null
+    val rest = line.substring(idx + key.length)
+    val num = rest.takeWhile { it.isDigit() }
+    return num.toLongOrNull()
+}
+
+private fun checkEnvelope(name: String, env: ProbeAudioEnvelope, windowStartMs: Long, windowMs: Long, expectedSpeech: Int, tolerance: Int): BooleanArray {
+    val rms = env.rms
+    val speech = ProbeAutoSyncAligner.speechEnvelope(rms)
+    val speechCount = speech.count { it }
+    println("GATE $name bins=${rms.size} speechBins=$speechCount")
+    if (rms.size != (windowMs / 100).toInt()) {
+        println("GATE RESULT: FAIL $name bins")
+        exitProcess(1)
+    }
+    if (speechCount < rms.size * 0.15) {
+        println("GATE RESULT: FAIL $name speech floor")
+        exitProcess(1)
+    }
+    if (speechCount > expectedSpeech + tolerance || speechCount < expectedSpeech - tolerance) {
+        println("GATE RESULT: FAIL $name speech mismatch expected=$expectedSpeech got=$speechCount")
+        exitProcess(1)
+    }
+    val plain = cuesFromSpeech(speech, windowStartMs, 0L)
+    val delay0 = ProbeAutoSyncAligner.bestDelayMs(speech, ProbeAutoSyncAligner.cueEnvelope(plain, windowStartMs, rms.size))
+    println("GATE $name unshifted expected=0 got=$delay0")
+    if (delay0 != 0) {
+        println("GATE RESULT: FAIL $name unshifted")
+        exitProcess(1)
+    }
+    val shifted = cuesFromSpeech(speech, windowStartMs, -2700L)
+    val delayShift = ProbeAutoSyncAligner.bestDelayMs(speech, ProbeAutoSyncAligner.cueEnvelope(shifted, windowStartMs, rms.size))
+    println("GATE $name shifted expected=2700 got=$delayShift")
+    if (delayShift != 2700) {
+        println("GATE RESULT: FAIL $name shifted")
+        exitProcess(1)
+    }
+    return speech
+}
+
+private suspend fun runFormatTest(name: String, url: String, windowStartMs: Long, windowMs: Long, expectedSpeech: Int, tolerance: Int, expectedCodec: String): Int {
+    val mark = InAppLogger.lines.size
+    val env = try {
+        readProbeAudioEnvelope(url, emptyMap(), windowStartMs, windowMs)
+    } catch (e: Exception) {
+        println("GATE $name threw ${e::class.simpleName}: ${e.message}")
+        null
+    }
+    if (env == null) {
+        println("GATE RESULT: FAIL $name envelope null")
+        exitProcess(1)
+    }
+    val speech = checkEnvelope(name, env, windowStartMs, windowMs, expectedSpeech, tolerance)
+    val metrics = latestMetricsSince(mark, "extract: mkv ")
+    if (metrics == null || !metrics.contains("codec=$expectedCodec")) {
+        println("GATE RESULT: FAIL $name metrics/codec metrics=$metrics")
+        exitProcess(1)
+    }
+    val knownSpans = parseLongAfter(metrics, "knownSpans=")
+    val tailSpans = parseLongAfter(metrics, "tailSpans=")
+    val spanBytes = parseLongAfter(metrics, "spanBytes=")
+    if (knownSpans == null || tailSpans == null || spanBytes == null) {
+        println("GATE RESULT: FAIL $name perf metrics unparsable metrics=$metrics")
+        exitProcess(1)
+    }
+    val knownRounds = (knownSpans + MODEL_PARALLELISM - 1) / MODEL_PARALLELISM
+    val modeled = spanBytes / MODEL_BYTES_PER_SEC * 1000.0 + knownRounds * MODEL_ROUND_MS + tailSpans * MODEL_ROUND_MS
+    println("GATE $name modeled=${modeled}ms knownSpans=$knownSpans tailSpans=$tailSpans spanBytes=$spanBytes")
+    if (modeled > 5000.0) {
+        println("GATE RESULT: FAIL $name modeled over 5s")
+        exitProcess(1)
+    }
+    return speech.count { it }
+}
+
+private suspend fun runHlsTest(name: String, url: String, windowStartMs: Long, windowMs: Long, expectedSpeech: Int) {
+    val mark = InAppLogger.lines.size
+    val env = try {
+        readProbeAudioEnvelope(url, emptyMap(), windowStartMs, windowMs)
+    } catch (e: Exception) {
+        println("GATE $name threw ${e::class.simpleName}: ${e.message}")
+        null
+    }
+    if (env == null) {
+        println("GATE RESULT: FAIL $name envelope null")
+        exitProcess(1)
+    }
+    checkEnvelope(name, env, windowStartMs, windowMs, expectedSpeech, 0)
+    val metrics = latestMetricsSince(mark, "extract: hls ")
+    if (metrics == null) {
+        println("GATE RESULT: FAIL $name no hls metrics")
+        exitProcess(1)
+    }
+    val segments = parseLongAfter(metrics, "segments=")
+    val segmentBytes = parseLongAfter(metrics, "segmentBytes=")
+    if (segments == null || segmentBytes == null) {
+        println("GATE RESULT: FAIL $name hls metrics unparsable metrics=$metrics")
+        exitProcess(1)
+    }
+    val modeled = modeledMs(segmentBytes, segments)
+    println("GATE $name modeled=${modeled}ms segments=$segments segmentBytes=$segmentBytes")
+    if (modeled > 5000.0) {
+        println("GATE RESULT: FAIL $name modeled over 5s")
+        exitProcess(1)
+    }
+}
 
 fun main() = runBlocking {
     println("GATE direct-file start url=$STREAM_URL window=$WINDOW_START_MS..${WINDOW_START_MS + WINDOW_MS}")
@@ -116,11 +249,30 @@ fun main() = runBlocking {
         println("GATE RESULT: FAIL shifted alignment")
         exitProcess(1)
     }
+    val directSpeech = speechCount
+    val directMetrics = latestMetricsSince(0, "extract: ranges=")
+    if (directMetrics == null) {
+        println("GATE RESULT: FAIL direct perf metrics missing")
+        exitProcess(1)
+    }
+    val directSpans = parseLongAfter(directMetrics, "spans=")
+    val directSpanBytes = parseLongAfter(directMetrics, "spanBytes=")
+    if (directSpans == null || directSpanBytes == null) {
+        println("GATE RESULT: FAIL direct perf metrics unparsable metrics=$directMetrics")
+        exitProcess(1)
+    }
+    val directModeled = modeledMs(directSpanBytes, directSpans)
+    println("GATE direct modeled=${directModeled}ms spans=$directSpans spanBytes=$directSpanBytes")
+    if (directModeled > 5000.0) {
+        println("GATE RESULT: FAIL direct modeled over 5s")
+        exitProcess(1)
+    }
     // Redirect test: the same file behind a 307. The probe client must follow
     // it (this is the device failure mechanism); the window content must match
     // the direct fetch exactly.
     // Local redirect server started by the workflow: a single 307 hop to the
     // same file the direct test fetches. No external test dependency.
+    val redirectMark = InAppLogger.lines.size
     val redirectUrl = "http://127.0.0.1:8931/redirect"
     val redirectEnv = try {
         readProbeAudioEnvelope(redirectUrl, emptyMap(), WINDOW_START_MS, WINDOW_MS)
@@ -138,6 +290,58 @@ fun main() = runBlocking {
     if (redirectEnv.rms.size != rms.size || redirectSpeechCount != speechCount) {
         println("GATE RESULT: FAIL redirect content mismatch")
         exitProcess(1)
+    }
+    val redirectMetrics = latestMetricsSince(redirectMark, "extract: ranges=")
+    if (redirectMetrics == null) {
+        println("GATE RESULT: FAIL redirect perf metrics missing")
+        exitProcess(1)
+    }
+    val redirectSpans = parseLongAfter(redirectMetrics, "spans=")
+    val redirectSpanBytes = parseLongAfter(redirectMetrics, "spanBytes=")
+    if (redirectSpans == null || redirectSpanBytes == null) {
+        println("GATE RESULT: FAIL redirect perf metrics unparsable metrics=$redirectMetrics")
+        exitProcess(1)
+    }
+    val redirectModeled = modeledMs(redirectSpanBytes, redirectSpans)
+    println("GATE redirect modeled=${redirectModeled}ms spans=$redirectSpans spanBytes=$redirectSpanBytes")
+    if (redirectModeled > 5000.0) {
+        println("GATE RESULT: FAIL redirect modeled over 5s")
+        exitProcess(1)
+    }
+    // ---- MKV / HLS suite (local files generated by the workflow) ----
+    val localBase = "http://127.0.0.1:8931"
+    // MKV AAC (remuxed copy: same audio as the MP4 direct run).
+    runFormatTest("mkv-aac", "$localBase/bbb-aac.mkv", WINDOW_START_MS, WINDOW_MS, directSpeech, 0, "A_AAC")
+    // MKV EAC3 + Opus (transcoded audio: timing preserved, bins may shift a little).
+    runFormatTest("mkv-eac3", "$localBase/bbb-eac3.mkv", WINDOW_START_MS, WINDOW_MS, directSpeech, 10, "A_EAC3")
+    runFormatTest("mkv-opus", "$localBase/bbb-opus.mkv", WINDOW_START_MS, WINDOW_MS, directSpeech, 10, "A_OPUS")
+    // MKV behind a 307 (redirect + EBML dispatch together).
+    runFormatTest("mkv-redirect", "$localBase/redirect-mkv", WINDOW_START_MS, WINDOW_MS, directSpeech, 0, "A_AAC")
+    // MKV without Cues: the scan fallback must run (cues=0 in the log).
+    val nocuesMark = InAppLogger.lines.size
+    runFormatTest("mkv-nocues", "$localBase/bbb-aac-nocues.mkv", WINDOW_START_MS, WINDOW_MS, directSpeech, 0, "A_AAC")
+    val nocuesTrack = latestMetricsSince(nocuesMark, "extract: mkv track")
+    if (nocuesTrack == null || !nocuesTrack.contains("cues=0")) {
+        println("GATE RESULT: FAIL mkv-nocues did not take the scan path track=$nocuesTrack")
+        exitProcess(1)
+    }
+    println("GATE mkv-nocues scan path confirmed cues=0")
+    // HLS, generated locally: TS segments and fMP4 segments (both -c copy,
+    // so the audio is identical to the MP4 direct run).
+    runHlsTest("hls-ts", "$localBase/hls-ts/index.m3u8", WINDOW_START_MS, WINDOW_MS, directSpeech)
+    runHlsTest("hls-fmp4", "$localBase/hls-fmp4/index.m3u8", WINDOW_START_MS, WINDOW_MS, directSpeech)
+    // MP3 in MKV: informational only; if it decodes, MP3 can be promoted
+    // from stretch to supported. Never fails the gate.
+    try {
+        val mp3Env = readProbeAudioEnvelope("$localBase/bbb-mp3.mkv", emptyMap(), WINDOW_START_MS, WINDOW_MS)
+        if (mp3Env == null) {
+            println("GATE mkv-mp3 envelope null (informational)")
+        } else {
+            val mp3Speech = ProbeAutoSyncAligner.speechEnvelope(mp3Env.rms)
+            println("GATE mkv-mp3 envelope bins=${mp3Env.rms.size} speechBins=${mp3Speech.count { it }} (informational)")
+        }
+    } catch (e: Exception) {
+        println("GATE mkv-mp3 threw ${e::class.simpleName} (informational)")
     }
     val hlsEnv = try {
         readProbeAudioEnvelope(HLS_URL, emptyMap(), WINDOW_START_MS, WINDOW_MS)

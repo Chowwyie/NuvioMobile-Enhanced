@@ -1,13 +1,29 @@
 #!/usr/bin/env python3
-"""Local redirect test server for the probe gate.
+"""Local test server for the probe gate.
 
-Serves one file with HTTP Range support and a /redirect endpoint that 307s
-to it. Usage: redirect_server.py <directory> <port>. The directory must
-contain bbb.mp4 (downloaded by the workflow). Binds 127.0.0.1 only.
+Serves files under a directory with HTTP Range support, plus 307
+redirect routes for the redirect tests. Usage:
+redirect_server.py <directory> <port>. Binds 127.0.0.1 only.
 """
 import http.server
 import os
 import sys
+
+
+REDIRECTS = {
+    "/redirect": "/bbb.mp4",
+    "/redirect-mkv": "/bbb-aac.mkv",
+}
+
+CONTENT_TYPES = {
+    ".mp4": "video/mp4",
+    ".mkv": "video/x-matroska",
+    ".webm": "video/webm",
+    ".m3u8": "application/vnd.apple.mpegurl",
+    ".ts": "video/mp2t",
+    ".m4s": "video/iso.segment",
+    ".mp3": "audio/mpeg",
+}
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -18,20 +34,27 @@ class Handler(http.server.BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
-        if self.path == "/redirect":
+        if self.path in REDIRECTS:
             self.send_response(307)
-            self.send_header("Location", "http://127.0.0.1:%d/bbb.mp4" % self.port)
+            self.send_header("Location", "http://127.0.0.1:%d%s" % (self.port, REDIRECTS[self.path]))
             self.end_headers()
             return
-        if self.path != "/bbb.mp4":
-            self.send_error(404)
+        rel = self.path.lstrip("/").split("?")[0]
+        base = os.path.abspath(self.directory)
+        path = os.path.abspath(os.path.join(base, rel))
+        if not path.startswith(base + os.sep):
+            self.send_error(403)
             return
-        path = os.path.join(self.directory, "bbb.mp4")
         try:
             size = os.path.getsize(path)
         except OSError:
             self.send_error(404)
             return
+        if os.path.isdir(path):
+            self.send_error(404)
+            return
+        ext = os.path.splitext(path)[1].lower()
+        ctype = CONTENT_TYPES.get(ext, "application/octet-stream")
         range_header = self.headers.get("Range")
         if range_header and range_header.startswith("bytes="):
             try:
@@ -49,7 +72,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             end = min(end, size - 1)
             length = end - start + 1
             self.send_response(206)
-            self.send_header("Content-Type", "video/mp4")
+            self.send_header("Content-Type", ctype)
             self.send_header("Content-Range", "bytes %d-%d/%d" % (start, end, size))
             self.send_header("Content-Length", str(length))
             self.end_headers()
@@ -64,7 +87,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     remaining -= len(chunk)
             return
         self.send_response(200)
-        self.send_header("Content-Type", "video/mp4")
+        self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(size))
         self.end_headers()
         with open(path, "rb") as f:

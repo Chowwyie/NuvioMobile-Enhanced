@@ -57,6 +57,21 @@ jobs:
           curl -L -o "$RUNNER_TEMP/bbb.mp4" "https://archive.org/download/BigBuckBunny_328/BigBuckBunny_512kb.mp4"
           test -s "$RUNNER_TEMP/bbb.mp4"
 
+      - name: Generate format test files
+        run: |
+          set -e
+          cd "$RUNNER_TEMP"
+          ffmpeg -version | head -1
+          ffmpeg -y -v error -i bbb.mp4 -c copy bbb-aac.mkv
+          ffmpeg -y -v error -i bbb.mp4 -c:v copy -c:a eac3 -b:a 192k bbb-eac3.mkv
+          ffmpeg -y -v error -i bbb.mp4 -c:v copy -c:a libopus -b:a 128k bbb-opus.mkv
+          ffmpeg -y -v error -i bbb.mp4 -c:v copy -c:a libmp3lame -b:a 192k bbb-mp3.mkv
+          mkdir -p hls-ts hls-fmp4
+          ffmpeg -y -v error -i bbb.mp4 -c copy -hls_time 6 -hls_playlist_type vod hls-ts/index.m3u8
+          ffmpeg -y -v error -i bbb.mp4 -c copy -hls_time 6 -hls_playlist_type vod -hls_segment_type fmp4 hls-fmp4/index.m3u8
+          python3 "$GITHUB_WORKSPACE/probe-gate/strip_cues.py" bbb-aac.mkv bbb-aac-nocues.mkv
+          ls -la bbb-aac.mkv bbb-eac3.mkv bbb-opus.mkv bbb-mp3.mkv bbb-aac-nocues.mkv hls-ts/index.m3u8 hls-fmp4/index.m3u8
+
       - name: Start local redirect server
         run: |
           set -e
