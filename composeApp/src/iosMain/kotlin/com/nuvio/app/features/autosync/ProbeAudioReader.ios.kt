@@ -1908,6 +1908,20 @@ private suspend fun readRemoteFileIntoBins(
     }
 }
 
+private suspend fun fetchDataParallel(urls: List<String>, headers: Map<String, String>): List<ByteArray?> {
+    val out = mutableListOf<ByteArray?>()
+    var i = 0
+    while (i < urls.size) {
+        val group = urls.subList(i, minOf(i + MKV_PARALLELISM, urls.size))
+        val results = coroutineScope {
+            group.map { url -> async { fetchData(url, headers) } }.awaitAll()
+        }
+        out.addAll(results)
+        i += MKV_PARALLELISM
+    }
+    return out
+}
+
 private suspend fun readHlsIntoBins(
     sourceUrl: String,
     headers: Map<String, String>,
@@ -1934,9 +1948,12 @@ private suspend fun readHlsIntoBins(
         return false
     }
     try {
+        val fetched = fetchDataParallel(needed.map { it.url }, headers)
         var anySegment = false
+        var fetchedBytes = 0L
         for ((index, segment) in needed.withIndex()) {
-            val data = fetchData(segment.url, headers) ?: continue
+            val data = fetched[index] ?: continue
+            fetchedBytes += data.size
             val path = tmpDir + "seg-$index.ts"
             if (!data.writeToSegmentFile(path)) continue
             val asset = AVURLAsset(uRL = NSURL.fileURLWithPath(path), options = null)
@@ -1944,6 +1961,7 @@ private suspend fun readHlsIntoBins(
                 anySegment = true
             }
         }
+        InAppLogger.debug("Player/ProbeAudioReader", "extract: hls segments=" + needed.size + " fetched=" + fetched.count { it != null } + " segmentBytes=" + fetchedBytes)
         return anySegment
     } finally {
         NSFileManager.defaultManager.removeItemAtPath(tmpDir, error = null)
@@ -2069,13 +2087,18 @@ private suspend fun AVURLAsset.awaitTracks(): Boolean = suspendCancellableCorout
     }
 }
 
-private suspend fun fetchData(url: String, headers: Map<String, String>): ByteArray? = try {
-    val response = probeHttpClient.get(url) {
-        headers.forEach { (key, value) -> header(key, value) }
+private suspend fun fetchData(url: String, headers: Map<String, String>): ByteArray? {
+    repeat(3) { attempt ->
+        try {
+            val response = probeHttpClient.get(url) {
+                headers.forEach { (key, value) -> header(key, value) }
+            }
+            if (response.status.isSuccess()) return response.body<ByteArray>()
+        } catch (_: Exception) {
+        }
+        if (attempt < 2) delay(1000)
     }
-    if (!response.status.isSuccess()) null else response.body<ByteArray>()
-} catch (_: Exception) {
-    null
+    return null
 }
 
 private suspend fun fetchText(url: String, headers: Map<String, String>): String? =
