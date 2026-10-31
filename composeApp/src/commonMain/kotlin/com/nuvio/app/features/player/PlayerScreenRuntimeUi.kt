@@ -956,7 +956,7 @@ private fun PlayerScreenRuntime.RenderPlayerModals() {
         selectedAddonSubtitle = selectedAddonSubtitle,
         subtitleAutoSyncState = subtitleAutoSyncState,
         probeAutoSyncStatus = probeAutoSyncStatus,
-        onProbeAutoSyncRetry = { requestProbeAutoSyncRetry() },
+        onProbeAutoSyncTrigger = { requestProbeAutoSync() },
         onBuiltInSubtitleTrackSelected = { index ->
             clearAutoSubtitleState()
             if (serverSubtitleTracks.isNotEmpty() && index >= 0) {

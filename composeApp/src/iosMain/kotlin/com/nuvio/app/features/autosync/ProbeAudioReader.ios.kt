@@ -226,7 +226,10 @@ private fun patchU64(boxBytes: ByteArray, offset: Int, value: Long): ByteArray {
 // server ignoring Range and answering 200 with the whole file can never turn
 // into a multi-gigabyte download. Retries transient failures (3 attempts,
 // 1s apart); every failed attempt logs its reason (status, size, or exception
-// kind) so device failures can be told apart. Never logs the URL.
+// kind) so device failures can be told apart. Follows up to 5 redirects per
+// attempt (the probe client surfaces 3xx instead of following them, e.g. a
+// PenguPlay direct URL 307s to the real backend); the Range header is
+// re-issued on each hop. Never logs the URL.
 private suspend fun fetchRange(
     url: String,
     headers: Map<String, String>,
@@ -255,26 +258,67 @@ private suspend fun fetchRangeOnce(
     endInclusive: Long,
     attempt: Int,
 ): ByteArray? = try {
-    val response = probeHttpClient.get(url) {
-        headers.forEach { (key, value) -> header(key, value) }
-        header("Range", "bytes=$start-$endInclusive")
-    }
-    if (!response.status.isSuccess()) {
-        InAppLogger.debug("Player/ProbeAudioReader", "fetchRange: attempt ${attempt} status=${response.status.value} start=${start}")
-        null
-    } else {
+    var currentUrl = url
+    var currentHeaders = headers
+    for (hop in 1..5) {
+        val response = probeHttpClient.get(currentUrl) {
+            currentHeaders.forEach { (key, value) -> header(key, value) }
+            header("Range", "bytes=$start-$endInclusive")
+        }
+        val status = response.status.value
+        if (status in setOf(301, 302, 303, 307, 308)) {
+            val location = response.headers["Location"]
+            if (location == null) {
+                InAppLogger.debug("Player/ProbeAudioReader", "fetchRange: attempt ${attempt} redirect without location status=${status} start=${start}")
+                return null
+            }
+            val nextUrl = resolveRedirect(currentUrl, location)
+            if (nextUrl == null) {
+                InAppLogger.debug("Player/ProbeAudioReader", "fetchRange: attempt ${attempt} redirect location unsupported start=${start}")
+                return null
+            }
+            InAppLogger.debug("Player/ProbeAudioReader", "fetchRange: attempt ${attempt} redirect status=${status} hop=${hop} start=${start}")
+            if (hostOf(nextUrl) != hostOf(currentUrl)) {
+                currentHeaders = currentHeaders.filterKeys { it.lowercase() != "authorization" }
+            }
+            currentUrl = nextUrl
+            continue
+        }
+        if (!response.status.isSuccess()) {
+            InAppLogger.debug("Player/ProbeAudioReader", "fetchRange: attempt ${attempt} status=${status} start=${start}")
+            return null
+        }
         val bytes = response.body<ByteArray>()
         val expected = endInclusive - start + 1
         if (bytes.size.toLong() == expected) {
-            bytes
-        } else {
-            InAppLogger.debug("Player/ProbeAudioReader", "fetchRange: attempt ${attempt} size mismatch expected=${expected} got=${bytes.size} start=${start}")
-            null
+            return bytes
         }
+        InAppLogger.debug("Player/ProbeAudioReader", "fetchRange: attempt ${attempt} size mismatch expected=${expected} got=${bytes.size} start=${start}")
+        return null
     }
+    InAppLogger.debug("Player/ProbeAudioReader", "fetchRange: attempt ${attempt} redirect hops exceeded start=${start}")
+    null
 } catch (e: Exception) {
     InAppLogger.debug("Player/ProbeAudioReader", "fetchRange: attempt ${attempt} exception kind=${e::class.simpleName} start=${start}")
     null
+}
+
+private fun hostOf(url: String): String =
+    url.substringAfter("://", "").substringBefore("/").substringBefore(":")
+
+private fun resolveRedirect(currentUrl: String, location: String): String? {
+    if (location.startsWith("http://") || location.startsWith("https://")) {
+        return location
+    }
+    if (!location.startsWith("/")) {
+        return null
+    }
+    val scheme = currentUrl.substringBefore("://")
+    val authority = currentUrl.substringAfter("://", "").substringBefore("/")
+    if (scheme == currentUrl || authority.isEmpty()) {
+        return null
+    }
+    return "$scheme://$authority$location"
 }
 
 // Walks top-level boxes by size (never downloading mdat content) until moov
