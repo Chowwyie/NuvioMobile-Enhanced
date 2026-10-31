@@ -1531,6 +1531,7 @@ private suspend fun extractWindowMkv(
     val knownBufs = fetchRangesParallel(sourceUrl, headers, knownRanges.map { Pair(it.fileStart, it.fileEnd) })
     var fetchedBytes = 0L
     var fetchedSpans = 0
+    var tailFetches = 0
     val allFrames = mutableListOf<MkvFrame>()
     for (i in knownRanges.indices) {
         val buf = knownBufs[i]
@@ -1562,6 +1563,7 @@ private suspend fun extractWindowMkv(
         }
         fetchedBytes += tailBuf.size
         fetchedSpans++
+        tailFetches++
         var done = false
         var extensions = 0
         while (!done) {
@@ -1587,6 +1589,7 @@ private suspend fun extractWindowMkv(
                 } else {
                     fetchedBytes += next.size
                     fetchedSpans++
+                    tailFetches++
                     tailBuf = tailBuf + next
                     extensions++
                 }
@@ -1659,7 +1662,7 @@ private suspend fun extractWindowMkv(
         InAppLogger.debug("Player/ProbeAudioReader", "extract: mkv write failed")
         return null
     }
-    InAppLogger.debug("Player/ProbeAudioReader", "extract: mkv doctype=" + docType + " codec=" + track.codecId + " rate=" + rate + " clusters=" + ranges.size + " spans=" + fetchedSpans + " spanBytes=" + fetchedBytes + " frames=" + windowFrames.size)
+    InAppLogger.debug("Player/ProbeAudioReader", "extract: mkv doctype=" + docType + " codec=" + track.codecId + " rate=" + rate + " clusters=" + ranges.size + " spans=" + fetchedSpans + " knownSpans=" + knownRanges.size + " tailSpans=" + tailFetches + " spanBytes=" + fetchedBytes + " frames=" + windowFrames.size)
     return path
 }
 
