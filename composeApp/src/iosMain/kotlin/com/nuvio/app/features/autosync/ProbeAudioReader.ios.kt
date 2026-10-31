@@ -128,6 +128,8 @@ private data class HlsSegment(
 private const val MAX_MOOV_BYTES = 16 * 1024 * 1024L
 private const val MAX_WINDOW_BYTES = 64 * 1024 * 1024L
 private const val MAX_WINDOW_RANGES = 4096
+private const val MERGE_GAP_BYTES = 256 * 1024L
+private const val MAX_SPAN_BYTES = 32 * 1024 * 1024L
 
 private fun ByteArray.u32be(offset: Int): Long {
     return ((this[offset].toLong() and 0xFF) shl 24) or
@@ -653,21 +655,60 @@ private suspend fun extractWindowMp4(
             ranges.add(Pair(start, end))
         }
     }
-    if (ranges.size > MAX_WINDOW_RANGES) {
-        InAppLogger.debug("Player/ProbeAudioReader", "extract: ranges cap ranges=${ranges.size}")
+    // Merge nearby ranges into spans: one fetch per span instead of one per
+    // chunk. Files with thousands of tiny chunks (e.g. 2814 ranges for a 60s
+    // window) took minutes fetching sequentially; merged spans fetch the
+    // same bytes in a handful of requests. A span never exceeds
+    // MAX_SPAN_BYTES; if ranges are not in ascending file order, fall back
+    // to per-range fetching (original behavior).
+    var ascending = true
+    for (i in 1 until ranges.size) {
+        if (ranges[i].first < ranges[i - 1].first) {
+            ascending = false
+            break
+        }
+    }
+    val spans = mutableListOf<Pair<Long, Long>>()
+    if (ascending) {
+        for ((start, end) in ranges) {
+            val last = spans.lastOrNull()
+            if (last != null && start - last.second <= MERGE_GAP_BYTES && end - last.first <= MAX_SPAN_BYTES) {
+                spans[spans.size - 1] = Pair(last.first, maxOf(last.second, end))
+            } else {
+                spans.add(Pair(start, end))
+            }
+        }
+    } else {
+        spans.addAll(ranges)
+    }
+    if (spans.size > MAX_WINDOW_RANGES) {
+        InAppLogger.debug("Player/ProbeAudioReader", "extract: spans cap spans=${spans.size}")
         return null
     }
-    InAppLogger.debug("Player/ProbeAudioReader", "extract: ranges=${ranges.size} bytes=${totalBytes}")
+    val spanBytesTotal = spans.sumOf { it.second - it.first }
+    InAppLogger.debug("Player/ProbeAudioReader", "extract: ranges=${ranges.size} spans=${spans.size} spanBytes=${spanBytesTotal} bytes=${totalBytes}")
     val sampleData = ByteArray(totalBytes.toInt())
     var pos = 0
-    for ((start, end) in ranges) {
-        val bytes = fetchRange(sourceUrl, headers, start, end - 1)
-        if (bytes == null) {
-            InAppLogger.debug("Player/ProbeAudioReader", "extract: sample range fetch failed start=${start} end=${end}")
+    var rangeIdx = 0
+    for ((spanStart, spanEnd) in spans) {
+        val spanBytes = fetchRange(sourceUrl, headers, spanStart, spanEnd - 1)
+        if (spanBytes == null) {
+            InAppLogger.debug("Player/ProbeAudioReader", "extract: span fetch failed start=${spanStart} end=${spanEnd}")
             return null
         }
-        bytes.copyInto(sampleData, pos)
-        pos += bytes.size
+        while (rangeIdx < ranges.size) {
+            val (start, end) = ranges[rangeIdx]
+            if (start < spanStart || end > spanEnd) {
+                break
+            }
+            spanBytes.copyInto(sampleData, pos, (start - spanStart).toInt(), (end - spanStart).toInt())
+            pos += (end - start).toInt()
+            rangeIdx++
+        }
+    }
+    if (rangeIdx != ranges.size) {
+        InAppLogger.debug("Player/ProbeAudioReader", "extract: span coverage mismatch covered=${rangeIdx} ranges=${ranges.size}")
+        return null
     }
     if (pos != sampleData.size) {
         InAppLogger.debug("Player/ProbeAudioReader", "extract: sample size mismatch pos=${pos} total=${sampleData.size}")
