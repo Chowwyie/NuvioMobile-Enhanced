@@ -57,11 +57,14 @@ jobs:
           curl -L -o "$RUNNER_TEMP/bbb.mp4" "https://archive.org/download/BigBuckBunny_328/BigBuckBunny_512kb.mp4"
           test -s "$RUNNER_TEMP/bbb.mp4"
 
+      - name: Install ffmpeg
+        run: brew install ffmpeg
+
       - name: Generate format test files
         run: |
           set -e
           cd "$RUNNER_TEMP"
-          ffmpeg -version | head -1
+          command -v ffmpeg
           ffmpeg -y -v error -i bbb.mp4 -c copy bbb-aac.mkv
           ffmpeg -y -v error -i bbb.mp4 -c:v copy -c:a eac3 -b:a 192k bbb-eac3.mkv
           ffmpeg -y -v error -i bbb.mp4 -c:v copy -c:a libopus -b:a 128k bbb-opus.mkv
