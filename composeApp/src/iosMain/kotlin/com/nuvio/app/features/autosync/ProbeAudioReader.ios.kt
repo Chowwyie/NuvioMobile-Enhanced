@@ -10,6 +10,7 @@ import kotlinx.cinterop.alloc
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.readBytes
+import kotlinx.cinterop.toKString
 import kotlinx.cinterop.value
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -41,6 +42,7 @@ import platform.AVFoundation.AVMediaTypeAudio
 import platform.posix.fclose
 import platform.posix.fopen
 import platform.posix.fwrite
+import platform.posix.getenv
 import com.nuvio.app.core.logging.InAppLogger
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
@@ -1663,6 +1665,7 @@ private suspend fun extractWindowMkv(
         InAppLogger.debug("Player/ProbeAudioReader", "extract: mkv write failed")
         return null
     }
+    dumpWindowFile("mkv-window.mp4", fileBytes)
     InAppLogger.debug("Player/ProbeAudioReader", "extract: mkv doctype=" + docType + " codec=" + track.codecId + " rate=" + rate + " clusters=" + ranges.size + " spans=" + fetchedSpans + " knownSpans=" + knownRanges.size + " tailSpans=" + tailFetches + " spanBytes=" + fetchedBytes + " frames=" + windowFrames.size)
     return path
 }
@@ -1871,6 +1874,7 @@ private suspend fun extractWindowMp4(
         InAppLogger.debug("Player/ProbeAudioReader", "extract: file write failed")
         return null
     }
+    dumpWindowFile("mp4-window.mp4", fileBytes)
     return path
 }
 
@@ -2109,6 +2113,15 @@ private suspend fun fetchData(url: String, headers: Map<String, String>): ByteAr
 
 private suspend fun fetchText(url: String, headers: Map<String, String>): String? =
     fetchData(url, headers)?.decodeToString()
+
+/** Best-effort debug dump: when PROBE_DUMP_DIR is set (gate only),
+    keep a copy of a synthesized window file outside the temp dir the
+    probe deletes in its finally block. No-op in production (unset). */
+private fun dumpWindowFile(name: String, bytes: ByteArray) {
+    val dir = platform.posix.getenv("PROBE_DUMP_DIR")?.toKString() ?: return
+    if (dir.isEmpty()) return
+    bytes.writeToSegmentFile("$dir/$name")
+}
 
 private fun ByteArray.writeToSegmentFile(path: String): Boolean {
     val file = fopen(path, "wb") ?: return false
