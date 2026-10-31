@@ -1138,7 +1138,8 @@ private class OpusHead(
 private fun parseOpusHead(priv: ByteArray): OpusHead? {
     if (priv.size < 19) return null
     if (priv.decodeToString(0, 8) != "OpusHead") return null
-    if ((priv[8].toInt() and 0xFF) != 0) return null
+    val opusVersion = priv[8].toInt() and 0xFF
+    if (opusVersion != 0 && opusVersion != 1) return null
     val channels = priv[9].toInt() and 0xFF
     val preSkip = priv.u16le(10)
     val inputRate = priv.u32le(12)
