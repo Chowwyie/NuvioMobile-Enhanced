@@ -9,6 +9,7 @@ import com.nuvio.app.features.autosync.AutoSyncSubtitleCandidate
 import com.nuvio.app.features.autosync.ProbeAutoSyncAligner
 import com.nuvio.app.core.logging.InAppLogger
 import com.nuvio.app.features.autosync.readProbeAudioEnvelope
+import com.nuvio.app.features.player.SubtitleSyncCue
 import com.nuvio.app.features.addons.httpGetTextWithHeaders
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
@@ -165,6 +166,63 @@ private suspend fun PlayerScreenRuntime.runProbeAutoSyncIfNeeded() {
     InAppLogger.info("Player/ProbeAutoSync", "probe applied delayMs=${delayMs} videoId=${videoId}")
     probeAutoSyncStatus = ProbeAutoSyncStatus.Applied(delayMs)
     setSubtitleDelay(delayMs)
+}
+
+/**
+ * Sparse-chunk probe (implemented alongside the continuous window; the
+ * manual Sync button still runs the continuous path until a direction is
+ * picked). Same subtitle and delay application, but speech comes from a few
+ * short chunks picked by cue density instead of one continuous window.
+ * Returns the measured delay, or null when chunks cannot support a
+ * measurement (caller falls back to the continuous window).
+ */
+private suspend fun PlayerScreenRuntime.runSparseProbe(
+    cues: List<SubtitleSyncCue>,
+): Int? {
+    val videoId = playbackSession.videoId
+    val chunks = ProbeAutoSyncAligner.pickSparseChunks(cues)
+    if (chunks.size < 2) {
+        InAppLogger.debug("Player/ProbeAutoSync", "probe sparse skipped: chunks=${chunks.size} videoId=${videoId}")
+        return null
+    }
+    val chunkBins = (ProbeAutoSyncAligner.SPARSE_CHUNK_MS / ProbeAutoSyncAligner.BIN_MS).toInt()
+    val spanStart = chunks.first()
+    val spanEnd = chunks.last() + ProbeAutoSyncAligner.SPARSE_CHUNK_MS
+    val spanBins = ((spanEnd - spanStart) / ProbeAutoSyncAligner.BIN_MS).toInt()
+    val speech = BooleanArray(spanBins)
+    val known = BooleanArray(spanBins)
+    var readChunks = 0
+    for (chunkStart in chunks) {
+        val envelope = runCatching {
+            readProbeAudioEnvelope(
+                sourceUrl = activeSourceUrl,
+                headers = activeSourceHeaders,
+                windowStartMs = chunkStart,
+                windowMs = ProbeAutoSyncAligner.SPARSE_CHUNK_MS,
+            )
+        }.getOrNull() ?: continue
+        val chunkSpeech = ProbeAutoSyncAligner.speechEnvelope(envelope.rms.take(chunkBins))
+        val offset = ((chunkStart - spanStart) / ProbeAutoSyncAligner.BIN_MS).toInt()
+        for (b in chunkSpeech.indices) {
+            if (offset + b < spanBins) {
+                speech[offset + b] = chunkSpeech[b]
+                known[offset + b] = true
+            }
+        }
+        readChunks++
+    }
+    if (readChunks < 2) {
+        InAppLogger.warn("Player/ProbeAutoSync", "probe sparse failed: chunks read=${readChunks} videoId=${videoId}")
+        return null
+    }
+    val cueEnv = ProbeAutoSyncAligner.cueEnvelope(cues, spanStart, spanBins)
+    val delayMs = ProbeAutoSyncAligner.bestDelayMsSparse(speech, known, cueEnv)
+    if (delayMs == null) {
+        InAppLogger.warn("Player/ProbeAutoSync", "probe sparse abstained: chunks=${readChunks} spanMs=${spanEnd - spanStart} videoId=${videoId}")
+        return null
+    }
+    InAppLogger.info("Player/ProbeAutoSync", "probe sparse applied delayMs=${delayMs} chunks=${readChunks} spanMs=${spanEnd - spanStart} videoId=${videoId}")
+    return delayMs
 }
 
 
