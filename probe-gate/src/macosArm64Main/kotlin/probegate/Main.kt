@@ -183,6 +183,127 @@ private suspend fun runHlsTest(name: String, url: String, windowStartMs: Long, w
     }
 }
 
+private fun sumMetricSince(mark: Int, prefix: String, key: String): Long {
+    var total = 0L
+    for (i in mark until InAppLogger.lines.size) {
+        val line = InAppLogger.lines[i]
+        if (line.contains(prefix)) {
+            parseLongAfter(line, key)?.let { total += it }
+        }
+    }
+    return total
+}
+
+private suspend fun runSparseSideBySide(name: String, url: String, isMkv: Boolean) {
+    val wideEnv = try {
+        readProbeAudioEnvelope(url, emptyMap(), 60_000, 240_000)
+    } catch (e: Exception) {
+        println("GATE sparse-$name scaffolding threw ${e::class.simpleName}")
+        null
+    }
+    if (wideEnv == null) {
+        println("GATE RESULT: FAIL sparse-$name scaffolding envelope null")
+        exitProcess(1)
+    }
+    val wideSpeech = ProbeAutoSyncAligner.speechEnvelope(wideEnv.rms.take(2400))
+    val cuesW = cuesFromSpeech(wideSpeech, 60_000, 0L)
+    val cuesWShifted = cuesFromSpeech(wideSpeech, 60_000, -2700L)
+    val chunks = ProbeAutoSyncAligner.pickSparseChunks(cuesW)
+    if (chunks.size < 2) {
+        println("GATE RESULT: FAIL sparse-$name chunks=${chunks.size}")
+        exitProcess(1)
+    }
+    val chunkBins = 50
+    val spanStart = chunks.first()
+    val spanEnd = chunks.last() + 5_000L
+    val spanBins = ((spanEnd - spanStart) / 100L).toInt()
+    val contigMark = InAppLogger.lines.size
+    val contigEnv = try {
+        readProbeAudioEnvelope(url, emptyMap(), WINDOW_START_MS, WINDOW_MS)
+    } catch (e: Exception) {
+        println("GATE sparse-$name contiguous threw ${e::class.simpleName}")
+        null
+    }
+    if (contigEnv == null) {
+        println("GATE RESULT: FAIL sparse-$name contiguous envelope null")
+        exitProcess(1)
+    }
+    val contigModeled: Double
+    if (isMkv) {
+        val contigMetrics = latestMetricsSince(contigMark, "extract: mkv ")
+        val known = parseLongAfter(contigMetrics ?: "", "knownSpans=")
+        val tail = parseLongAfter(contigMetrics ?: "", "tailSpans=")
+        val bytes = parseLongAfter(contigMetrics ?: "", "spanBytes=")
+        if (known == null || tail == null || bytes == null) {
+            println("GATE RESULT: FAIL sparse-$name contiguous mkv metrics metrics=$contigMetrics")
+            exitProcess(1)
+        }
+        val knownRounds = (known + MODEL_PARALLELISM - 1) / MODEL_PARALLELISM
+        contigModeled = bytes / MODEL_BYTES_PER_SEC * 1000.0 + knownRounds * MODEL_ROUND_MS + tail * MODEL_ROUND_MS
+    } else {
+        val contigMetrics = latestMetricsSince(contigMark, "extract: ranges=")
+        val spans = parseLongAfter(contigMetrics ?: "", "spans=")
+        val bytes = parseLongAfter(contigMetrics ?: "", "spanBytes=")
+        if (spans == null || bytes == null) {
+            println("GATE RESULT: FAIL sparse-$name contiguous mp4 metrics metrics=$contigMetrics")
+            exitProcess(1)
+        }
+        contigModeled = modeledMs(bytes, spans)
+    }
+    val sparseMark = InAppLogger.lines.size
+    val speech = BooleanArray(spanBins)
+    val known = BooleanArray(spanBins)
+    var readChunks = 0
+    for (chunkStart in chunks) {
+        val chunkEnv = try {
+            readProbeAudioEnvelope(url, emptyMap(), chunkStart, 5_000)
+        } catch (e: Exception) {
+            println("GATE sparse-$name chunk $chunkStart threw ${e::class.simpleName}")
+            null
+        } ?: continue
+        val chunkSpeech = ProbeAutoSyncAligner.speechEnvelope(chunkEnv.rms.take(chunkBins))
+        val offset = ((chunkStart - spanStart) / 100L).toInt()
+        for (b in chunkSpeech.indices) {
+            if (offset + b < spanBins) {
+                speech[offset + b] = chunkSpeech[b]
+                known[offset + b] = true
+            }
+        }
+        readChunks++
+    }
+    if (readChunks < 2) {
+        println("GATE RESULT: FAIL sparse-$name chunks read=$readChunks")
+        exitProcess(1)
+    }
+    val sparseModeled: Double
+    val chunkBytes: Long
+    if (isMkv) {
+        val totalKnown = sumMetricSince(sparseMark, "extract: mkv ", "knownSpans=")
+        val totalTail = sumMetricSince(sparseMark, "extract: mkv ", "tailSpans=")
+        chunkBytes = sumMetricSince(sparseMark, "extract: mkv ", "spanBytes=")
+        val knownRounds = (totalKnown + MODEL_PARALLELISM - 1) / MODEL_PARALLELISM
+        sparseModeled = chunkBytes / MODEL_BYTES_PER_SEC * 1000.0 + knownRounds * MODEL_ROUND_MS + totalTail * MODEL_ROUND_MS
+    } else {
+        val totalSpans = sumMetricSince(sparseMark, "extract: ranges=", "spans=")
+        chunkBytes = sumMetricSince(sparseMark, "extract: ranges=", "spanBytes=")
+        sparseModeled = modeledMs(chunkBytes, totalSpans)
+    }
+    val cueEnv = ProbeAutoSyncAligner.cueEnvelope(cuesW, spanStart, spanBins)
+    val delay0 = ProbeAutoSyncAligner.bestDelayMsSparse(speech, known, cueEnv)
+    val cueEnvShifted = ProbeAutoSyncAligner.cueEnvelope(cuesWShifted, spanStart, spanBins)
+    val delayShift = ProbeAutoSyncAligner.bestDelayMsSparse(speech, known, cueEnvShifted)
+    println("GATE sparse-$name unshifted expected=0 got=$delay0 shifted expected=2700 got=$delayShift chunks=$readChunks spanMs=${spanEnd - spanStart}")
+    if (delay0 != 0 || delayShift != 2700) {
+        println("GATE RESULT: FAIL sparse-$name alignment")
+        exitProcess(1)
+    }
+    println("GATE sparse-$name modeled=${sparseModeled}ms chunkBytes=$chunkBytes contiguousModeled=${contigModeled}ms")
+    if (sparseModeled >= contigModeled) {
+        println("GATE RESULT: FAIL sparse-$name modeled not below contiguous")
+        exitProcess(1)
+    }
+}
+
 fun main() = runBlocking {
     println("GATE direct-file start url=$STREAM_URL window=$WINDOW_START_MS..${WINDOW_START_MS + WINDOW_MS}")
     val env = try {
@@ -355,6 +476,8 @@ fun main() = runBlocking {
         val hlsSpeech = ProbeAutoSyncAligner.speechEnvelope(hlsEnv.rms)
         println("GATE hls envelope bins=${hlsEnv.rms.size} speechBins=${hlsSpeech.count { it }} (informational)")
     }
+    runSparseSideBySide("mp4", "$localBase/bbb.mp4", false)
+    runSparseSideBySide("mkv-aac", "$localBase/bbb-aac.mkv", true)
     println("GATE RESULT: PASS")
 }
 
