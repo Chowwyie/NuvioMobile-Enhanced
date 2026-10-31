@@ -1985,6 +1985,7 @@ private suspend fun readHlsIntoBins(
     val windowEndMs = windowStartMs + windowMs
     val needed = segments.filter { it.startMs < windowEndMs && it.startMs + it.durationMs > windowStartMs }
     if (needed.isEmpty()) return false
+    val initData = parseMapUri(mediaText, mediaUrl)?.let { fetchData(it, headers) }
     val tmpDir = NSTemporaryDirectory() + "probe-audio-" + NSUUID().UUIDString + "/"
     if (!NSFileManager.defaultManager.createDirectoryAtPath(tmpDir, withIntermediateDirectories = true, attributes = null, error = null)) {
         return false
@@ -1996,8 +1997,9 @@ private suspend fun readHlsIntoBins(
         for ((index, segment) in needed.withIndex()) {
             val data = fetched[index] ?: continue
             fetchedBytes += data.size
-            val path = tmpDir + "seg-$index.ts"
-            if (!data.writeToSegmentFile(path)) continue
+            val segmentData = if (initData != null) initData + data else data
+            val path = tmpDir + if (initData != null) "seg-$index.m4s" else "seg-$index.ts"
+            if (!segmentData.writeToSegmentFile(path)) continue
             val asset = AVURLAsset(uRL = NSURL.fileURLWithPath(path), options = null)
             if (readAssetBins(asset, null, false, segment.startMs, windowStartMs, binCount, sumSq, counts)) {
                 anySegment = true
@@ -2192,6 +2194,17 @@ private fun selectMediaPlaylist(masterText: String, masterUrl: String): String? 
         }
     }
     return bestUri?.let { resolveUrl(masterUrl, it) }
+}
+
+private fun parseMapUri(text: String, baseUrl: String): String? {
+    for (rawLine in text.lines()) {
+        val line = rawLine.trim()
+        if (line.startsWith("#EXT-X-MAP:")) {
+            val uri = extractQuoted(line, "URI") ?: return null
+            return resolveUrl(baseUrl, uri)
+        }
+    }
+    return null
 }
 
 private fun parseSegments(text: String, baseUrl: String): List<HlsSegment> {
