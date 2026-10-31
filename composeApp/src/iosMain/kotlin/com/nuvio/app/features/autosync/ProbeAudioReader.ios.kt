@@ -1373,7 +1373,7 @@ private suspend fun extractWindowMkv(
     var tracksEnd = -1
     var seekHead: Map<Long, Long> = emptyMap()
     var firstClusterFilePos: Long = -1
-    var chunk = first
+    var chunk: ByteArray = first
     var chunkStart = 0L
     var walkPos = segDataStart
     var walkedChunks = 0
@@ -1400,7 +1400,7 @@ private suspend fun extractWindowMkv(
         val dataStart = walkPos + h.headerLen
         val dataEndKnown = h.size >= 0
         val dataEnd = if (dataEndKnown) dataStart + h.size else -1L
-        fun payloadBytes(): ByteArray? {
+        suspend fun payloadBytes(): ByteArray? {
             if (dataEndKnown && dataStart >= chunkStart && dataEnd <= chunkStart + chunk.size) {
                 val s = (dataStart - chunkStart).toInt()
                 val e = (dataEnd - chunkStart).toInt()
@@ -1556,11 +1556,12 @@ private suspend fun extractWindowMkv(
         }
     }
     if (tailRange != null) {
-        var tailBuf = fetchRange(sourceUrl, headers, tailRange.fileStart, tailRange.fileStart + MKV_TAIL_PREFIX_BYTES - 1)
-        if (tailBuf == null) {
+        val tailFirst = fetchRange(sourceUrl, headers, tailRange.fileStart, tailRange.fileStart + MKV_TAIL_PREFIX_BYTES - 1)
+        if (tailFirst == null) {
             InAppLogger.debug("Player/ProbeAudioReader", "extract: mkv tail fetch failed")
             return null
         }
+        var tailBuf: ByteArray = tailFirst
         fetchedBytes += tailBuf.size
         fetchedSpans++
         tailFetches++
