@@ -650,7 +650,7 @@ private fun hostOnly(url: String): String {
     return afterScheme.substringBefore("/").substringBefore("?").ifBlank { "unknown-host" }
 }
 
-private fun nowSec(): Double = NSDate().timeIntervalSince1970
+private fun nowSec(): Double = NSDate().timeIntervalSince1970()
 
 private fun fmtSec(s: Double): String {
     val tenths = (s * 10).toInt()
