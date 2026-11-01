@@ -130,6 +130,13 @@ private suspend fun PlayerScreenRuntime.runProbeAutoSyncIfNeeded() {
         probeAutoSyncStatus = ProbeAutoSyncStatus.Failed
         return
     }
+    val sparseDelayMs = runSparseProbe(cues)
+    if (sparseDelayMs != null) {
+        InAppLogger.info("Player/ProbeAutoSync", "probe applied delayMs=${sparseDelayMs} via=sparse videoId=${videoId}")
+        probeAutoSyncStatus = ProbeAutoSyncStatus.Applied(sparseDelayMs)
+        setSubtitleDelay(sparseDelayMs)
+        return
+    }
     val envelope = runCatching {
         readProbeAudioEnvelope(
             sourceUrl = activeSourceUrl,
@@ -169,10 +176,10 @@ private suspend fun PlayerScreenRuntime.runProbeAutoSyncIfNeeded() {
 }
 
 /**
- * Sparse-chunk probe (implemented alongside the continuous window; the
- * manual Sync button still runs the continuous path until a direction is
- * picked). Same subtitle and delay application, but speech comes from a few
- * short chunks picked by cue density instead of one continuous window.
+ * Sparse-chunk probe: the manual Sync button tries this first and falls
+ * back to the continuous window when it returns null. Same subtitle and
+ * delay application, but speech comes from a few short chunks picked by
+ * cue density instead of one continuous window.
  * Returns the measured delay, or null when chunks cannot support a
  * measurement (caller falls back to the continuous window).
  */
