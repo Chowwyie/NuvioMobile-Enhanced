@@ -48,6 +48,7 @@ import kotlinx.cinterop.toKString
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
 import platform.Foundation.NSDate
+import platform.Foundation.timeIntervalSince1970
 import platform.posix.getenv
 
 // Real public stream, 596s, so the gate uses the probe's real 180-240s window.
@@ -650,7 +651,7 @@ private fun hostOnly(url: String): String {
     return afterScheme.substringBefore("/").substringBefore("?").ifBlank { "unknown-host" }
 }
 
-private fun nowSec(): Double = NSDate().timeIntervalSince1970()
+private fun nowSec(): Double = NSDate().timeIntervalSince1970
 
 private fun fmtSec(s: Double): String {
     val tenths = (s * 10).toInt()
