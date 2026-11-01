@@ -1993,6 +1993,7 @@ private suspend fun readHlsIntoBins(
     try {
         val fetched = fetchDataParallel(needed.map { it.url }, headers)
         var anySegment = false
+        var dumpedFmp4 = false
         var fetchedBytes = 0L
         for ((index, segment) in needed.withIndex()) {
             val data = fetched[index] ?: continue
@@ -2000,12 +2001,16 @@ private suspend fun readHlsIntoBins(
             val segmentData = if (initData != null) initData + data else data
             val path = tmpDir + if (initData != null) "seg-$index.m4s" else "seg-$index.ts"
             if (!segmentData.writeToSegmentFile(path)) continue
+            if (initData != null && !dumpedFmp4) {
+                dumpWindowFile("hls-fmp4-window.m4s", segmentData)
+                dumpedFmp4 = true
+            }
             val asset = AVURLAsset(uRL = NSURL.fileURLWithPath(path), options = null)
             if (readAssetBins(asset, null, false, segment.startMs, windowStartMs, binCount, sumSq, counts)) {
                 anySegment = true
             }
         }
-        InAppLogger.debug("Player/ProbeAudioReader", "extract: hls segments=" + needed.size + " fetched=" + fetched.count { it != null } + " segmentBytes=" + fetchedBytes)
+        InAppLogger.debug("Player/ProbeAudioReader", "extract: hls segments=" + needed.size + " fetched=" + fetched.count { it != null } + " segmentBytes=" + fetchedBytes + " initBytes=" + (initData?.size ?: -1))
         return anySegment
     } finally {
         NSFileManager.defaultManager.removeItemAtPath(tmpDir, error = null)
@@ -2125,11 +2130,18 @@ private suspend fun readAssetBins(
 
 private suspend fun AVURLAsset.awaitTracks(): Boolean = suspendCancellableCoroutine { cont ->
     loadValuesAsynchronouslyForKeys(listOf("tracks")) {
-        val loaded = memScoped {
+        val status = memScoped {
             val error = alloc<ObjCObjectVar<platform.Foundation.NSError?>>()
-            statusOfValueForKey("tracks", error.ptr) == AVKeyValueStatusLoaded
+            statusOfValueForKey("tracks", error.ptr)
         }
-        cont.resume(loaded)
+        if (status != AVKeyValueStatusLoaded) {
+            val errorSel = NSSelectorFromString("error")
+            val errDesc = if (errorSel != null) {
+                (performSelector(errorSel) as? platform.Foundation.NSError)?.localizedDescription ?: "<null>"
+            } else "<no-selector>"
+            InAppLogger.debug("Player/ProbeAudioReader", "awaitTracks status=$status error=$errDesc")
+        }
+        cont.resume(status == AVKeyValueStatusLoaded)
     }
 }
 
