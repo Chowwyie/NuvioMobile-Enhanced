@@ -89,6 +89,7 @@ jobs:
       - name: Run gate
         env:
           PROBE_DUMP_DIR: ${{ runner.temp }}/probe-dump
+          LIVE_PENGU_MANIFEST_URL: ${{ secrets.PENGUPLAY_MANIFEST_URL }}
         run: |
           mkdir -p "$RUNNER_TEMP/probe-dump"
           ./probe-gate/build/bin/macosArm64/releaseExecutable/probe-gate.kexe

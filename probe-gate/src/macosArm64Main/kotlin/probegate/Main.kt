@@ -44,6 +44,11 @@ import platform.posix.fopen
 import platform.posix.fwrite
 import kotlin.coroutines.resume
 import kotlin.system.exitProcess
+import kotlinx.cinterop.toKString
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.withTimeout
+import platform.Foundation.NSDate
+import platform.posix.getenv
 
 // Real public stream, 596s, so the gate uses the probe's real 180-240s window.
 private const val STREAM_URL = "https://archive.org/download/BigBuckBunny_328/BigBuckBunny_512kb.mp4"
@@ -501,6 +506,7 @@ fun main() = runBlocking {
     }
     runSparseSideBySide("mp4", "$localBase/bbb.mp4", false)
     runSparseSideBySide("mkv-aac", "$localBase/bbb-aac.mkv", true)
+    runLiveAddonSection()
     println("GATE RESULT: PASS")
 }
 
@@ -623,4 +629,137 @@ private suspend fun runStageDiagnostics(url: String, windowStartMs: Long, window
         samples++
     }
     println("DIAG samples=$samples firstPtsSeconds=$firstPts status=${reader.status}")
+}
+
+// ---- Live-addon section (gate-only code; NOT app code) ----
+// Fetches ONE real stream list from a Stremio-compatible addon and runs the
+// REAL reader against the first http(s) stream URL, reporting WALL-CLOCK
+// per-stage timings: the numbers the byte-model cannot see (redirect
+// latency, per-chunk header rescans, host speed). This is what the
+// deterministic BBB fixture could not show: it has no redirects and a fast
+// host, so redirect latency and rescan costs were invisible until devices.
+// The manifest URL comes from env LIVE_PENGU_MANIFEST_URL (a repo secret).
+// The gate NEVER prints the manifest URL or any stream URL: only hosts,
+// the fixed public title id, counts, kinds, and timings. Stream-list JSON is
+// scanned with a small regex (gate-only parsing, not app code) because the
+// gate project has no serialization dependency.
+// This section NEVER fails the gate: a live host is flaky by nature, so its
+// outcome is reported on its own LIVE RESULT line, separate from GATE RESULT.
+private fun hostOnly(url: String): String {
+    val afterScheme = url.substringAfter("://", url)
+    return afterScheme.substringBefore("/").substringBefore("?").ifBlank { "unknown-host" }
+}
+
+private fun nowSec(): Double = NSDate().timeIntervalSince1970
+
+private fun fmtSec(s: Double): String {
+    val tenths = (s * 10).toInt()
+    return "${tenths / 10}.${tenths % 10}"
+}
+
+private suspend fun fetchListText(url: String): String? = try {
+    val client = HttpClient(Darwin)
+    try {
+        val resp = client.get(url)
+        if (!resp.status.isSuccess()) null else resp.body<ByteArray>().decodeToString()
+    } finally {
+        client.close()
+    }
+} catch (_: Exception) {
+    null
+}
+
+private fun firstHttpUrl(json: String): String? {
+    val idx = json.indexOf("\"streams\"")
+    if (idx < 0) return null
+    val re = Regex("\"url\"\\s*:\\s*\"(https?://[^\"]+)\"")
+    return re.find(json, idx)?.groupValues?.getOrNull(1)
+}
+
+private suspend fun runLiveAddonSection() {
+    val manifest = getenv("LIVE_PENGU_MANIFEST_URL")?.toKString().orEmpty()
+    if (manifest.isBlank()) {
+        println("LIVE RESULT: SKIPPED no manifest configured")
+        return
+    }
+    if (!manifest.endsWith("/manifest.json")) {
+        println("LIVE RESULT: SKIPPED manifest url does not end in manifest.json")
+        return
+    }
+    val base = manifest.removeSuffix("/manifest.json")
+    val title = "tt17513352:1:1"
+    try {
+        withTimeout(900_000) {
+            val listBody = fetchListText("$base/stream/series/$title.json")
+            if (listBody == null) {
+                println("LIVE RESULT: HOST_UNAVAILABLE host=${hostOnly(base)} stage=stream-list kind=fetch-failed")
+                return@withTimeout
+            }
+            val streamUrl = firstHttpUrl(listBody)
+            if (streamUrl == null) {
+                println("LIVE RESULT: HOST_UNAVAILABLE host=${hostOnly(base)} stage=stream-list kind=no-http-stream")
+                return@withTimeout
+            }
+            val streamHost = hostOnly(streamUrl)
+            println("LIVE stream host=$streamHost title=$title")
+            val wideT0 = nowSec()
+            val wideEnv = try {
+                readProbeAudioEnvelope(streamUrl, emptyMap(), 60_000, 240_000)
+            } catch (e: Exception) {
+                println("LIVE wide threw ${e::class.simpleName}")
+                null
+            }
+            val wideT1 = nowSec()
+            if (wideEnv == null) {
+                println("LIVE RESULT: FAIL host=$streamHost stage=wide-envelope wallSec=${fmtSec(wideT1 - wideT0)}")
+                return@withTimeout
+            }
+            val wideSpeech = ProbeAutoSyncAligner.speechEnvelope(wideEnv.rms.take(2400))
+            println("LIVE wide host=$streamHost wallSec=${fmtSec(wideT1 - wideT0)} bins=${wideEnv.rms.size} speechBins=${wideSpeech.count { it }}")
+            val cues = cuesFromSpeech(wideSpeech, 60_000, 0L)
+            val chunks = ProbeAutoSyncAligner.pickSparseChunks(cues)
+            println("LIVE sparse picked=$chunks")
+            if (chunks.size < 2) {
+                println("LIVE RESULT: ABSTAINED host=$streamHost reason=chunks-${chunks.size}")
+                return@withTimeout
+            }
+            var readChunks = 0
+            var sparseSec = 0.0
+            for (chunkStart in chunks) {
+                val cT0 = nowSec()
+                val chunkEnv = try {
+                    readProbeAudioEnvelope(streamUrl, emptyMap(), chunkStart, 5_000)
+                } catch (e: Exception) {
+                    println("LIVE chunk $chunkStart threw ${e::class.simpleName}")
+                    null
+                }
+                val cT1 = nowSec()
+                sparseSec += (cT1 - cT0)
+                if (chunkEnv == null) {
+                    println("LIVE chunk $chunkStart envelope null wallSec=${fmtSec(cT1 - cT0)}")
+                    continue
+                }
+                val cs = ProbeAutoSyncAligner.speechEnvelope(chunkEnv.rms.take(50))
+                println("LIVE chunk $chunkStart wallSec=${fmtSec(cT1 - cT0)} speechBins=${cs.count { it }}")
+                readChunks++
+            }
+            val kT0 = nowSec()
+            val contigEnv = try {
+                readProbeAudioEnvelope(streamUrl, emptyMap(), WINDOW_START_MS, WINDOW_MS)
+            } catch (e: Exception) {
+                println("LIVE contiguous threw ${e::class.simpleName}")
+                null
+            }
+            val kT1 = nowSec()
+            if (contigEnv == null) {
+                println("LIVE RESULT: FAIL host=$streamHost stage=contiguous-envelope wallSec=${fmtSec(kT1 - kT0)} chunksRead=$readChunks")
+                return@withTimeout
+            }
+            val contigSpeech = ProbeAutoSyncAligner.speechEnvelope(contigEnv.rms)
+            println("LIVE contiguous host=$streamHost wallSec=${fmtSec(kT1 - kT0)} bins=${contigEnv.rms.size} speechBins=${contigSpeech.count { it }}")
+            println("LIVE RESULT: OK host=$streamHost wideSec=${fmtSec(wideT1 - wideT0)} sparseSec=${fmtSec(sparseSec)} chunksRead=$readChunks contigSec=${fmtSec(kT1 - kT0)}")
+        }
+    } catch (e: TimeoutCancellationException) {
+        println("LIVE RESULT: TIMEOUT after 900s")
+    }
 }
