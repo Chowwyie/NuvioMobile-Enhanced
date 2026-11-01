@@ -209,6 +209,7 @@ private suspend fun runSparseSideBySide(name: String, url: String, isMkv: Boolea
     val cuesW = cuesFromSpeech(wideSpeech, 60_000, 0L)
     val cuesWShifted = cuesFromSpeech(wideSpeech, 60_000, -2700L)
     val chunks = ProbeAutoSyncAligner.pickSparseChunks(cuesW)
+    println("GATE sparse-$name picked=$chunks")
     if (chunks.size < 2) {
         println("GATE RESULT: FAIL sparse-$name chunks=${chunks.size}")
         exitProcess(1)
@@ -260,8 +261,15 @@ private suspend fun runSparseSideBySide(name: String, url: String, isMkv: Boolea
         } catch (e: Exception) {
             println("GATE sparse-$name chunk $chunkStart threw ${e::class.simpleName}")
             null
-        } ?: continue
+        }
+        if (chunkEnv == null) {
+            println("GATE sparse-$name chunk $chunkStart envelope null")
+            continue
+        }
         val chunkSpeech = ProbeAutoSyncAligner.speechEnvelope(chunkEnv.rms.take(chunkBins))
+        val wideIdx = ((chunkStart - 60_000L) / 100L).toInt()
+        val wideCount = (0 until chunkBins).count { wideIdx + it in wideSpeech.indices && wideSpeech[wideIdx + it] }
+        println("GATE sparse-$name chunk $chunkStart rms=${chunkEnv.rms.size} speechBins=${chunkSpeech.count { it }} wideSpeechBins=$wideCount")
         val offset = ((chunkStart - spanStart) / 100L).toInt()
         for (b in chunkSpeech.indices) {
             if (offset + b < spanBins) {
@@ -293,6 +301,17 @@ private suspend fun runSparseSideBySide(name: String, url: String, isMkv: Boolea
     val cueEnvShifted = ProbeAutoSyncAligner.cueEnvelope(cuesWShifted, spanStart, spanBins)
     val delayShift = ProbeAutoSyncAligner.bestDelayMsSparse(speech, known, cueEnvShifted)
     println("GATE sparse-$name unshifted expected=0 got=$delay0 shifted expected=2700 got=$delayShift chunks=$readChunks spanMs=${spanEnd - spanStart}")
+    val scoreAt = { lagMs: Int, cueArr: BooleanArray ->
+        val lagBins = lagMs / 100
+        var s = 0
+        for (i in speech.indices) {
+            if (!known[i]) continue
+            val ci = i - lagBins
+            if (ci in cueArr.indices && speech[i] && cueArr[ci]) s++
+        }
+        s
+    }
+    println("GATE sparse-$name scores shifted best=$delayShift score=${scoreAt(delayShift ?: 0, cueEnvShifted)} expected2700=${scoreAt(2700, cueEnvShifted)} unshifted best=$delay0 score=${scoreAt(delay0 ?: 0, cueEnv)}")
     if (delay0 != 0 || delayShift != 2700) {
         println("GATE RESULT: FAIL sparse-$name alignment")
         exitProcess(1)
