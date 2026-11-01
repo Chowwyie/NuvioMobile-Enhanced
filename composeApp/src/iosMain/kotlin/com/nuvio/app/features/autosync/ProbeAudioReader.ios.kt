@@ -1999,7 +1999,7 @@ private suspend fun readHlsIntoBins(
             val data = fetched[index] ?: continue
             fetchedBytes += data.size
             val segmentData = if (initData != null) initData + data else data
-            val path = tmpDir + if (initData != null) "seg-$index.m4s" else "seg-$index.ts"
+            val path = tmpDir + if (initData != null) "seg-$index.mp4" else "seg-$index.ts"
             if (!segmentData.writeToSegmentFile(path)) continue
             if (initData != null && !dumpedFmp4) {
                 dumpWindowFile("hls-fmp4-window.m4s", segmentData)
