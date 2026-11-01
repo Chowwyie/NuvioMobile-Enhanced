@@ -104,6 +104,13 @@ object ProbeAutoSyncAligner {
     const val SPARSE_SEARCH_START_MS = 60_000L
     const val SPARSE_SEARCH_END_MS = 300_000L
     const val SPARSE_MIN_CUE_BINS_PER_CHUNK = 15
+    /**
+     * Fully-cued slices carry no lag information: with no silence inside,
+     * their overlap count is flat across lags, so they only pad the score
+     * and let plateau ties resolve to the wrong lag. Keep slices with real
+     * speech/silence contrast (internal cue edges discriminate lag).
+     */
+    const val SPARSE_MAX_CUE_BINS_PER_CHUNK = 40
 
     /**
      * Chunk starts (ms) by cue density: 5s slices over the search span,
@@ -119,7 +126,7 @@ object ProbeAutoSyncAligner {
         val sepBins = (SPARSE_MIN_SEPARATION_MS / BIN_MS).toInt()
         val scored = (0 until spanBins - chunkBins + 1 step chunkBins).map { start ->
             start to (start until start + chunkBins).count { cueEnv[it] }
-        }.filter { it.second >= SPARSE_MIN_CUE_BINS_PER_CHUNK }
+        }.filter { it.second in SPARSE_MIN_CUE_BINS_PER_CHUNK..SPARSE_MAX_CUE_BINS_PER_CHUNK }
             .sortedByDescending { it.second }
         val picked = mutableListOf<Int>()
         for ((start, _) in scored) {
