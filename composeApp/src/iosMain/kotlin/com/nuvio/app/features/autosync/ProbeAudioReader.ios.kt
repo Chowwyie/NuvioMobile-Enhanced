@@ -2130,15 +2130,13 @@ private suspend fun readAssetBins(
 
 private suspend fun AVURLAsset.awaitTracks(): Boolean = suspendCancellableCoroutine { cont ->
     loadValuesAsynchronouslyForKeys(listOf("tracks")) {
-        val status = memScoped {
+        val (status, errDesc) = memScoped {
             val error = alloc<ObjCObjectVar<platform.Foundation.NSError?>>()
-            statusOfValueForKey("tracks", error.ptr)
+            val st = statusOfValueForKey("tracks", error.ptr)
+            val desc = error.value?.localizedDescription ?: "<null>"
+            st to desc
         }
         if (status != AVKeyValueStatusLoaded) {
-            val errorSel = NSSelectorFromString("error")
-            val errDesc = if (errorSel != null) {
-                (performSelector(errorSel) as? platform.Foundation.NSError)?.localizedDescription ?: "<null>"
-            } else "<no-selector>"
             InAppLogger.debug("Player/ProbeAudioReader", "awaitTracks status=$status error=$errDesc")
         }
         cont.resume(status == AVKeyValueStatusLoaded)
