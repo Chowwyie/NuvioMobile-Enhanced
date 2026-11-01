@@ -1653,8 +1653,14 @@ private suspend fun extractWindowMkv(
     val lastDur = codecFrameSamples(track.codecId, lastFrame.bytes)
     val lastDurMs = if (lastDur > 0) (lastDur * 1000.0 / rate.toDouble()).toLong() else 0L
     val coverageMs = (lastFrame.timeMs + lastDurMs) - windowFrames.first().timeMs
-    if (coverageMs < 30_000L) {
-        InAppLogger.debug("Player/ProbeAudioReader", "extract: mkv window coverage short coverageMs=" + coverageMs)
+    // Window-relative floor: the fixed 30s floor was written for the
+    // contiguous 60s window and can never pass a 5s sparse chunk, whose
+    // coverage is the full window minus frame quantization at the edges
+    // (measured 4970-4991ms of 5000ms). Require 90% of the requested
+    // window instead, keeping the truncated-window rejection for every
+    // caller (54s of a 60s window, 4.5s of a 5s chunk).
+    if (coverageMs * 10 < windowMs * 9) {
+        InAppLogger.debug("Player/ProbeAudioReader", "extract: mkv window coverage short coverageMs=" + coverageMs + " windowMs=" + windowMs)
         return null
     }
     val stsd = mkvStsd(track, rate, channels, windowFrames)
