@@ -687,79 +687,86 @@ private suspend fun runLiveAddonSection() {
         return
     }
     val base = manifest.removeSuffix("/manifest.json")
-    val title = "tt17513352:1:1"
+    // Shows Alan picked (E1 of each): Our Beloved Summer, When I Fly Towards You.
+    val titles = listOf("tt15026724:1:1", "tt28036189:1:1")
     try {
         withTimeout(900_000) {
-            val listBody = fetchListText("$base/stream/series/$title.json")
-            if (listBody == null) {
-                println("LIVE RESULT: HOST_UNAVAILABLE host=${hostOnly(base)} stage=stream-list kind=fetch-failed")
-                return@withTimeout
+            for (title in titles) {
+                runLiveTitle(base, title)
             }
-            val streamUrl = firstHttpUrl(listBody)
-            if (streamUrl == null) {
-                println("LIVE RESULT: HOST_UNAVAILABLE host=${hostOnly(base)} stage=stream-list kind=no-http-stream")
-                return@withTimeout
-            }
-            val streamHost = hostOnly(streamUrl)
-            println("LIVE stream host=$streamHost title=$title")
-            val wideT0 = nowSec()
-            val wideEnv = try {
-                readProbeAudioEnvelope(streamUrl, emptyMap(), 60_000, 240_000)
-            } catch (e: Exception) {
-                println("LIVE wide threw ${e::class.simpleName}")
-                null
-            }
-            val wideT1 = nowSec()
-            if (wideEnv == null) {
-                println("LIVE RESULT: FAIL host=$streamHost stage=wide-envelope wallSec=${fmtSec(wideT1 - wideT0)}")
-                return@withTimeout
-            }
-            val wideSpeech = ProbeAutoSyncAligner.speechEnvelope(wideEnv.rms.take(2400))
-            println("LIVE wide host=$streamHost wallSec=${fmtSec(wideT1 - wideT0)} bins=${wideEnv.rms.size} speechBins=${wideSpeech.count { it }}")
-            val cues = cuesFromSpeech(wideSpeech, 60_000, 0L)
-            val chunks = ProbeAutoSyncAligner.pickSparseChunks(cues)
-            println("LIVE sparse picked=$chunks")
-            if (chunks.size < 2) {
-                println("LIVE RESULT: ABSTAINED host=$streamHost reason=chunks-${chunks.size}")
-                return@withTimeout
-            }
-            var readChunks = 0
-            var sparseSec = 0.0
-            for (chunkStart in chunks) {
-                val cT0 = nowSec()
-                val chunkEnv = try {
-                    readProbeAudioEnvelope(streamUrl, emptyMap(), chunkStart, 5_000)
-                } catch (e: Exception) {
-                    println("LIVE chunk $chunkStart threw ${e::class.simpleName}")
-                    null
-                }
-                val cT1 = nowSec()
-                sparseSec += (cT1 - cT0)
-                if (chunkEnv == null) {
-                    println("LIVE chunk $chunkStart envelope null wallSec=${fmtSec(cT1 - cT0)}")
-                    continue
-                }
-                val cs = ProbeAutoSyncAligner.speechEnvelope(chunkEnv.rms.take(50))
-                println("LIVE chunk $chunkStart wallSec=${fmtSec(cT1 - cT0)} speechBins=${cs.count { it }}")
-                readChunks++
-            }
-            val kT0 = nowSec()
-            val contigEnv = try {
-                readProbeAudioEnvelope(streamUrl, emptyMap(), WINDOW_START_MS, WINDOW_MS)
-            } catch (e: Exception) {
-                println("LIVE contiguous threw ${e::class.simpleName}")
-                null
-            }
-            val kT1 = nowSec()
-            if (contigEnv == null) {
-                println("LIVE RESULT: FAIL host=$streamHost stage=contiguous-envelope wallSec=${fmtSec(kT1 - kT0)} chunksRead=$readChunks")
-                return@withTimeout
-            }
-            val contigSpeech = ProbeAutoSyncAligner.speechEnvelope(contigEnv.rms)
-            println("LIVE contiguous host=$streamHost wallSec=${fmtSec(kT1 - kT0)} bins=${contigEnv.rms.size} speechBins=${contigSpeech.count { it }}")
-            println("LIVE RESULT: OK host=$streamHost wideSec=${fmtSec(wideT1 - wideT0)} sparseSec=${fmtSec(sparseSec)} chunksRead=$readChunks contigSec=${fmtSec(kT1 - kT0)}")
         }
     } catch (e: TimeoutCancellationException) {
         println("LIVE RESULT: TIMEOUT after 900s")
     }
+}
+
+private suspend fun runLiveTitle(base: String, title: String) {
+    val listBody = fetchListText("$base/stream/series/$title.json")
+    if (listBody == null) {
+        println("LIVE RESULT: HOST_UNAVAILABLE host=${hostOnly(base)} title=$title stage=stream-list kind=fetch-failed")
+        return
+    }
+    val streamUrl = firstHttpUrl(listBody)
+    if (streamUrl == null) {
+        println("LIVE RESULT: HOST_UNAVAILABLE host=${hostOnly(base)} title=$title stage=stream-list kind=no-http-stream")
+        return
+    }
+    val streamHost = hostOnly(streamUrl)
+    println("LIVE stream host=$streamHost title=$title")
+    val wideT0 = nowSec()
+    val wideEnv = try {
+        readProbeAudioEnvelope(streamUrl, emptyMap(), 60_000, 240_000)
+    } catch (e: Exception) {
+        println("LIVE wide threw ${e::class.simpleName}")
+        null
+    }
+    val wideT1 = nowSec()
+    if (wideEnv == null) {
+        println("LIVE RESULT: FAIL host=$streamHost title=$title stage=wide-envelope wallSec=${fmtSec(wideT1 - wideT0)}")
+        return
+    }
+    val wideSpeech = ProbeAutoSyncAligner.speechEnvelope(wideEnv.rms.take(2400))
+    println("LIVE wide host=$streamHost title=$title wallSec=${fmtSec(wideT1 - wideT0)} bins=${wideEnv.rms.size} speechBins=${wideSpeech.count { it }}")
+    val cues = cuesFromSpeech(wideSpeech, 60_000, 0L)
+    val chunks = ProbeAutoSyncAligner.pickSparseChunks(cues)
+    println("LIVE sparse picked=$chunks title=$title")
+    if (chunks.size < 2) {
+        println("LIVE RESULT: ABSTAINED host=$streamHost title=$title reason=chunks-${chunks.size}")
+        return
+    }
+    var readChunks = 0
+    var sparseSec = 0.0
+    for (chunkStart in chunks) {
+        val cT0 = nowSec()
+        val chunkEnv = try {
+            readProbeAudioEnvelope(streamUrl, emptyMap(), chunkStart, 5_000)
+        } catch (e: Exception) {
+            println("LIVE chunk $chunkStart threw ${e::class.simpleName}")
+            null
+        }
+        val cT1 = nowSec()
+        sparseSec += (cT1 - cT0)
+        if (chunkEnv == null) {
+            println("LIVE chunk $chunkStart envelope null wallSec=${fmtSec(cT1 - cT0)}")
+            continue
+        }
+        val cs = ProbeAutoSyncAligner.speechEnvelope(chunkEnv.rms.take(50))
+        println("LIVE chunk $chunkStart wallSec=${fmtSec(cT1 - cT0)} speechBins=${cs.count { it }}")
+        readChunks++
+    }
+    val kT0 = nowSec()
+    val contigEnv = try {
+        readProbeAudioEnvelope(streamUrl, emptyMap(), WINDOW_START_MS, WINDOW_MS)
+    } catch (e: Exception) {
+        println("LIVE contiguous threw ${e::class.simpleName}")
+        null
+    }
+    val kT1 = nowSec()
+    if (contigEnv == null) {
+        println("LIVE RESULT: FAIL host=$streamHost title=$title stage=contiguous-envelope wallSec=${fmtSec(kT1 - kT0)} chunksRead=$readChunks")
+        return
+    }
+    val contigSpeech = ProbeAutoSyncAligner.speechEnvelope(contigEnv.rms)
+    println("LIVE contiguous host=$streamHost title=$title wallSec=${fmtSec(kT1 - kT0)} bins=${contigEnv.rms.size} speechBins=${contigSpeech.count { it }}")
+    println("LIVE RESULT: OK host=$streamHost title=$title wideSec=${fmtSec(wideT1 - wideT0)} sparseSec=${fmtSec(sparseSec)} chunksRead=$readChunks contigSec=${fmtSec(kT1 - kT0)}")
 }
