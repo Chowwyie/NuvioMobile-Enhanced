@@ -1637,7 +1637,28 @@ private suspend fun extractWindowMkv(
             return null
         }
     }
-    val windowFrames = allFrames.filter { it.timeMs >= windowStartMs && it.timeMs < windowEndMs }
+    // MP4 parity: include the frame overlapping the window start, not just
+    // frames starting inside it. MP4 selects samples with e > wStart, so its
+    // first in-window frame decodes with a predecessor; MKV dropped that
+    // frame, so every sparse chunk's first frame decoded in isolation
+    // (MDCT overlap lost) and its first bin was attenuated - enough to
+    // flip the 1-bin near-tie in sparse-mkv-aac (71 vs 70 at 2800/2700).
+    // Only include the predecessor when it actually overlaps the window.
+    val inWindowFrames = allFrames.filter { it.timeMs >= windowStartMs && it.timeMs < windowEndMs }
+    val windowFrames = if (inWindowFrames.isEmpty()) {
+        inWindowFrames
+    } else {
+        val firstIdx = allFrames.indexOf(inWindowFrames.first())
+        if (firstIdx > 0) {
+            val prev = allFrames[firstIdx - 1]
+            val prevSamples = codecFrameSamples(track.codecId, prev.bytes)
+            val prevRate = if (track.sampleRate > 0.0) track.sampleRate else 48000.0
+            val prevDurMs = if (prevSamples > 0) (prevSamples * 1000.0 / prevRate).toLong() else 0L
+            if (prev.timeMs + prevDurMs > windowStartMs) listOf(prev) + inWindowFrames else inWindowFrames
+        } else {
+            inWindowFrames
+        }
+    }
     if (windowFrames.isEmpty()) {
         InAppLogger.debug("Player/ProbeAudioReader", "extract: mkv no frames in window total=" + allFrames.size)
         return null
