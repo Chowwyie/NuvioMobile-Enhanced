@@ -103,14 +103,15 @@ object ProbeAutoSyncAligner {
     const val SPARSE_MIN_SEPARATION_MS = 30_000L
     const val SPARSE_SEARCH_START_MS = 60_000L
     const val SPARSE_SEARCH_END_MS = 300_000L
-    const val SPARSE_MIN_CUE_BINS_PER_CHUNK = 15
+    const val SPARSE_MIN_CUE_BINS_PER_CHUNK = 10
     /**
-     * Fully-cued slices carry no lag information: with no silence inside,
-     * their overlap count is flat across lags, so they only pad the score
-     * and let plateau ties resolve to the wrong lag. Keep slices with real
-     * speech/silence contrast (internal cue edges discriminate lag).
+     * Slices need real speech/silence contrast to discriminate lag:
+     * fully-cued slices are flat across lags (only pad the score), and
+     * near-saturated slices leave almost no silence edges. The 10..30
+     * band keeps contrast while admitting sparser slices, so sparse
+     * engages on sparse dialogue instead of falling back.
      */
-    const val SPARSE_MAX_CUE_BINS_PER_CHUNK = 40
+    const val SPARSE_MAX_CUE_BINS_PER_CHUNK = 30
 
     /**
      * Chunk starts (ms) by cue density: 5s slices over the search span,
@@ -136,6 +137,21 @@ object ProbeAutoSyncAligner {
             }
         }
         return picked.sorted().map { SPARSE_SEARCH_START_MS + it * BIN_MS }
+    }
+
+    /**
+     * Span covering [chunks] padded by [MAX_LAG_MS] on both sides. The
+     * scorer reads cues at i - lag, so without padding the first chunk
+     * sits at bin 0 and its leading |lag| bins can never match at the
+     * true lag, biasing sparse toward lag 0 (measured: a 27-bin penalty
+     * at lag 2700 on dense material). Cues are free, so padding costs
+     * no bytes; chunk reads are unchanged.
+     */
+    fun sparseSpan(chunks: List<Long>): Pair<Long, Int> {
+        val spanStart = chunks.first() - MAX_LAG_MS
+        val spanEnd = chunks.last() + SPARSE_CHUNK_MS + MAX_LAG_MS
+        val spanBins = ((spanEnd - spanStart) / BIN_MS).toInt()
+        return spanStart to spanBins
     }
 
     /**

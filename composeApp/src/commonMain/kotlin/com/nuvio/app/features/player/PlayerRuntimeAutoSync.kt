@@ -186,9 +186,8 @@ private suspend fun PlayerScreenRuntime.runSparseProbe(
         return null
     }
     val chunkBins = (ProbeAutoSyncAligner.SPARSE_CHUNK_MS / ProbeAutoSyncAligner.BIN_MS).toInt()
-    val spanStart = chunks.first()
-    val spanEnd = chunks.last() + ProbeAutoSyncAligner.SPARSE_CHUNK_MS
-    val spanBins = ((spanEnd - spanStart) / ProbeAutoSyncAligner.BIN_MS).toInt()
+    val (spanStart, spanBins) = ProbeAutoSyncAligner.sparseSpan(chunks)
+    val spanEnd = spanStart + spanBins * ProbeAutoSyncAligner.BIN_MS
     val speech = BooleanArray(spanBins)
     val known = BooleanArray(spanBins)
     var readChunks = 0
