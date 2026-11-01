@@ -215,9 +215,8 @@ private suspend fun runSparseSideBySide(name: String, url: String, isMkv: Boolea
         exitProcess(1)
     }
     val chunkBins = 50
-    val spanStart = chunks.first()
-    val spanEnd = chunks.last() + 5_000L
-    val spanBins = ((spanEnd - spanStart) / 100L).toInt()
+    val (spanStart, spanBins) = ProbeAutoSyncAligner.sparseSpan(chunks)
+    val spanEnd = spanStart + spanBins * 100L
     val contigMark = InAppLogger.lines.size
     val contigEnv = try {
         readProbeAudioEnvelope(url, emptyMap(), WINDOW_START_MS, WINDOW_MS)
